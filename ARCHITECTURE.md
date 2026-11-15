@@ -42,10 +42,36 @@ Each of the four tracks is a separate instance of the same SynthDef, with its ow
 
 1. Keep the first version monolithic until the combination of grain, resonance, and recirculation sounds worthwhile.
 2. Separate the language-level SynthDef factory from server startup using `~erroneusMakeTrackDef`; this allows headless compilation tests without an audio device.
-3. Control DSP on the server; manage buffers, scenes, MIDI/OSC, and persistence in sclang.
+3. Keep DSP on the server. In the SuperCollider prototype, manage buffers, scenes, MIDI/OSC, and persistence in `sclang`, but expose their behavior through a portable control contract rather than making `sclang` the permanent application runtime.
 4. Add buses and deterministic group ordering as soon as cross-track and per-stage routing enter the engine.
 5. Provide a budget for grains/partials and use bounded feedback, DC blocking, and output limiting.
 6. Distinguish freeze (stopping buffer writes) from scan (moving the granular read position).
+
+## Cross-platform desktop application: design for portability
+
+**Direction, not an immediate migration.** Continue experimenting and validating audio in stock SuperCollider. Preserve the option to ship a standalone Erroneus application on Windows, macOS, and Linux without requiring the end user to install or operate the SuperCollider IDE.
+
+The preferred incremental route is a native desktop shell/controller (C++ with Qt is a promising, **provisional** choice) that launches or manages a bundled `scsynth` server, loads compiled `.scsyndef` files, and communicates over OSC. An interim package may still run `sclang` internally if needed; that is a transitional option, not a requirement for the final app. Reimplementing DSP in native code is **not** a prerequisite. Reconsider a DSP rewrite only for demonstrated performance, integration, licensing, or distribution reasons. Do not commit to a particular UI toolkit or plugin format before a functioning end-to-end prototype.
+
+### Boundaries to preserve now
+
+- **DSP and musical timing belong to the audio engine.** Keep grains, modulation, feedback safety, timing-critical clock/transport phase, and sample-accurate decisions in `scsynth`. A GUI or controller may request tempo/transport changes or schedule musical events, but must not become the authoritative audio clock. Keep optional free-running operation.
+- **Use a replaceable controller layer.** `sclang` may continue to orchestrate startup, buffers, routing, sample loading, and tests during exploration. Separate the *meaning* of those operations from `sclang` globals, GUI callbacks, and platform-dependent file paths so another process can perform them via OSC.
+- **Specify stable commands and parameter metadata.** Define track/parameter IDs, units, ranges, defaults, smoothing, normalization, modulation destinations, and state changes in a documented interface. Commands should include track selection, parameter updates, sample load/use/unload, freeze, transport/tempo, panic/mute, and eventually scene recall and morph. Avoid different meanings for the same control in different GUIs.
+- **One authoritative performance state.** Scene values, morph positions, base parameters, modulation routes, sample references, and transport state should have an explicit owner and a way to publish changes. Qt controls, keyboard, mouse/tablet, MIDI/NRPN, OSC, and automation should all dispatch through the same action model, so they cannot silently diverge after external input. The existing test GUIs need not implement this immediately.
+- **Design clock and interpolation as engine-facing services.** Represent tempo, beat/bar phase, quantization, transport, and future external sync without tying them to an `AppClock`, window, or MIDI device. Keep A/B interpolation state independent of the gesture that drives it; apply bounded, appropriately smoothed parameter changes in the server and avoid per-sample messages from the UI.
+- **Keep project files portable.** When persistence arrives, use an explicitly versioned, documented data format and separate stored musical settings from runtime handles such as Synth IDs, bus numbers, and buffer IDs. Resolve user sample paths through a configurable library/project location; handle missing samples and cross-platform path conventions.
+- **Treat dependencies and audio backends as shipping concerns.** Favor stock SuperCollider UGens initially. Any additional UGen or native dependency must be available and packageable on all intended targets or carry an explicit compatibility fallback. Account for bundled library licenses, Windows/macOS/Linux audio and MIDI backend differences, device loss, shutdown cleanup, and audio safety; do not assume successful compilation means a releasable instrument.
+
+### Portability checkpoints
+
+1. Continue developing and listening in SuperCollider; keep headless SynthDef compilation part of CI.
+2. As the clock, modulation, and scene systems mature, write down their externally observable OSC command and state contracts before adding more device-specific GUI logic. In particular, preserve the server-owned musical clock introduced by the clock work.
+3. Build a small **external-controller proof of concept**: from a non-`sclang` process, start or attach to `scsynth`, load exported SynthDefs, allocate buffers/groups in the correct order, change parameters/tempo, exercise panic, and shut down cleanly. This should work without the SuperCollider IDE and eventually without `sclang` at runtime.
+4. Add contract tests for state synchronization and buffer lifetime, plus repeatable audio renders or captured reference output to catch behavioral changes. Validate timing, feedback safety, CPU budget, and real MIDI/audio I/O on actual hardware separately.
+5. Only after that proof works, prototype a desktop shell and release build on each target OS. Investigate app packaging, signing/notarization on macOS, runtime dependencies, automated builds, and the applicable SuperCollider/GUI licensing obligations before making distribution promises.
+
+**Guiding rule:** A future native application may replace the GUI and controller, but should not have to rediscover the instrument's musical semantics or rewrite its working DSP merely to ship.
 
 ## Near-term roadmap
 
