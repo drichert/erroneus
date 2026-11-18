@@ -10,6 +10,27 @@ try({
     });
     ~erroneusMakeTrackDef.value.asBytes;
     "ERRONEUS_COMPILE_OK".postln;
+    if(~erroneusMakeClockDef.isNil, {
+        Error("Shared server clock SynthDef factory was not loaded").throw;
+    });
+    ~erroneusMakeClockDef.value.asBytes;
+    if(~erroneusClockDivisions != [0, 1, 2, 4, 8, 16], {
+        Error("Shared clock division options changed").throw;
+    });
+    ~erroneusSetTempo.value(136);
+    if(~erroneusBPM != 136, {
+        Error("Tempo setter failed to store valid BPM").throw;
+    });
+    ~erroneusSetTempo.value(999);
+    if(~erroneusBPM != 136, {
+        Error("Tempo setter must reject out-of-range BPM").throw;
+    });
+    ~erroneusSetClockRunning.value(0);
+    if(~erroneusClockRunning != 0, {
+        Error("Clock pause setter failed").throw;
+    });
+    ~erroneusSetClockRunning.value(1);
+    "ERRONEUS_CLOCK_COMPILE_OK".postln;
     ~erroneusGuiCompileOnly = true;
     thisProcess.interpreter.executeFile("erroneus-gui.scd");
     if(~erroneusOpenGUI.isNil, {

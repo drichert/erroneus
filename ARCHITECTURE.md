@@ -152,6 +152,16 @@ Potential mappings (experiments, not fixed canon): X = state A/B morph, Y = chao
 
 Rate-limit/decimate incoming GUI or tablet events in the control layer, then smooth appropriate parameters on the audio server. Do not send per-sample OSC events. Keep a keyboard-accessible panic/mute action independent of controller focus whenever possible.
 
+## Shared master tempo clock (v0.5)
+
+The four tracks share a single server-side musical timeline. A dedicated \erroneusClock SynthDef advances a four-beat Phasor at audio rate using BPM / 60 and SampleDur. It sends two *non-audible* audio-bus signals: normalized beat phase and normalized 4/4 bar phase. The clock Synth is placed first in the execution group and all track SynthDefs read the same bus using In.ar. Their downstream event boundaries are derived from the same clock sample block, not four independent language schedulers or separate beat counters.
+
+Each track has clockDivision = 0 by default, preserving its existing probabilistic Dust.kr trigger. With a division of 1, 2, 4, 8 or 16, its GrainBuf trigger uses the falling edge of the fractional phase on that grid. Audio-rate triggers allow sample-accurate grain initiation. This is a musical subdivision defined as *grains per beat*, not a multiplier of grain density. The existing density/evolve settings affect only free-running grain triggering.
+
+The transport can be paused/resumed and BPM changed with lightweight commands; pausing holds the phase but does **not** silence the engine. Loaded sample playback, live capture, scanning, and the four modulation oscillators are still free-running. Converting their parameters to beat-relative values is separate future work. The four-beat meter is fixed for the prototype. Repeated start/stop retains the latest tempo and running state in sclang, but the phase restarts with a fresh clock Synth.
+
+Future work: deterministic bar-quantized launching/capture, beat-divided or multiplied modulator rates, beat-aware granular time stretching, clocked gesture playback, track phase offsets, alternative meters, and an external MIDI clock follower with drift filtering. Keep audio-time phase independent from the GUI and input devices. TempoClock can be used for pre-scheduled language tasks, but it must be aligned to the DSP transport rather than treated as the definitive audio tick.
+
 ## Testing strategy
 
 The CI check compiles the actual SynthDef with `.asBytes`, which catches language parsing and SynthDef graph construction errors. Since CI has no reliable audio device, real-time signal behavior and audible feedback stability must be checked separately on a configured SuperCollider server.

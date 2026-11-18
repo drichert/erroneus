@@ -5,9 +5,64 @@
 // For headless compilation, set ~erroneusCompileOnly = true before loading.
 
 (
+// One server-side transport drives all four tracks. The audio bus carries
+// normalized beat phase (channel 0) and four-beat bar phase (channel 1).
+~erroneusMakeClockDef = {
+    SynthDef(\erroneusClock, {
+        |phaseBus = 0, bpm = 120, running = 1|
+        var beats, beatPhase, barPhase;
+        beats = Phasor.ar(
+            0, (bpm.clip(30, 300) / 60.0) * SampleDur.ir * running.clip(0, 1),
+            0, 4
+        );
+        beatPhase = beats.frac;
+        barPhase = beats / 4;
+        Out.ar(phaseBus, [beatPhase, barPhase]);
+    })
+};
+
+// Default free-running grains remain unchanged. Valid synchronized divisions
+// are the number of evenly spaced grains per beat on a common 4/4 grid.
+~erroneusClockDivisions = [0, 1, 2, 4, 8, 16];
+~erroneusBPM = ~erroneusBPM ? 120;
+~erroneusClockRunning = ~erroneusClockRunning ? 1;
+
+~erroneusSetTempo = { |bpm|
+    if(bpm.isNumber and: { (bpm >= 30) and: { bpm <= 300 } }, {
+        ~erroneusBPM = bpm;
+        if(~erroneusClock.notNil, { ~erroneusClock.set(\bpm, bpm); });
+    }, {
+        "Erroneus BPM must be between 30 and 300.".warn;
+    });
+};
+
+~erroneusSetClockRunning = { |running|
+    if([0, 1].includes(running), {
+        ~erroneusClockRunning = running;
+        if(~erroneusClock.notNil, {
+            ~erroneusClock.set(\running, running);
+        });
+    }, {
+        "Clock running must be 0 (pause) or 1 (resume).".warn;
+    });
+};
+
+~erroneusSetTrackDivision = { |track, division|
+    if(
+        ~erroneusSampleValidTrack.value(track) and: {
+            ~erroneusClockDivisions.includes(division)
+        }, {
+            ~erroneusTracks[track].set(\clockDivision, division);
+        }, {
+            "Choose a running track 0-3 and clock division 0, 1, 2, 4, 8, or 16.".warn;
+        }
+    );
+};
+
 ~erroneusMakeTrackDef = {
     SynthDef(\erroneusTrack, {
-        |out = 0, buf = 0, sampleBuf = 0, sampleMode = 0, voice = 0, sourceMode = 0, inputGain = 0.25,
+        |out = 0, buf = 0, sampleBuf = 0, sampleMode = 0, clockPhaseBus = 0, clockDivision = 0,
+         voice = 0, sourceMode = 0, inputGain = 0.25,
          amp = 0.13, grainMix = 0.8, density = 15,
          grainDur = 0.22, pitch = 1, position = 0.35,
          scanHz = 0, spray = 0.025,
@@ -22,7 +77,8 @@
         var base, internal, external, material, captureMaterial, sampleDirect;
         var samplePhase, activeBuf, sampleOn, phase, readPos;
         var recordEnabled, captureWriteHead, captureReadPos, absoluteReadPos;
-        var grainTrigger, granular, sound, ring, colored;
+        var grainTrigger, freeGrainTrigger, beatPhase, gridPhase, gridTrigger;
+        var granular, sound, ring, colored;
         var feedbackSignal, recordSignal, outputSignal, drift;
         var waveSignal, modFor, m1, m2, m3, m4;
         var effectivePosition, effectiveScan, effectiveSpray, effectiveDensity;
@@ -123,9 +179,19 @@
             [absoluteReadPos, captureReadPos]
         );
 
-        grainTrigger = Dust.kr(
+        // Shared phase from the clock Synth preceding every track in the
+        // same node group. Audio-rate grid triggers align across all tracks.
+        // Division = 0 keeps the original probabilistic free-running grains.
+        beatPhase = In.ar(clockPhaseBus, 2)[0];
+        gridPhase = (beatPhase * clockDivision.clip(0, 16)).frac;
+        gridTrigger = (HPZ1.ar(gridPhase) < (-0.1));
+        freeGrainTrigger = Dust.kr(
             effectiveDensity *
             (1 + (LFNoise1.kr(0.4) * evolve)).clip(0.1, 1.9)
+        );
+        grainTrigger = Select.ar(
+            (clockDivision > 0),
+            [K2A.ar(freeGrainTrigger), gridTrigger]
         );
         granular = GrainBuf.ar(
             2, grainTrigger, effectiveDuration, activeBuf,
@@ -299,6 +365,11 @@
         ~erroneusGroup.free;
         ~erroneusGroup = nil;
     });
+    ~erroneusClock = nil;
+    if(~erroneusClockPhaseBus.notNil, {
+        ~erroneusClockPhaseBus.free;
+        ~erroneusClockPhaseBus = nil;
+    });
     // Invalidate any outstanding asynchronous file-read completions.
     ~erroneusSampleSession = (~erroneusSampleSession ? 0) + 1;
     if(~erroneusSampleBuffers.notNil, {
@@ -328,6 +399,7 @@
     s.options.numInputBusChannels = 2;
 
     s.waitForBoot({
+        ~erroneusMakeClockDef.value.add;
         ~erroneusMakeTrackDef.value.add;
         Routine({
             s.sync;
@@ -342,9 +414,17 @@
             });
             s.sync;
 
+            ~erroneusClockPhaseBus = Bus.audio(s, 2);
             ~erroneusGroup = Group.head(s);
+            // Clock must execute before track In.ar readers in every block.
+            ~erroneusClock = Synth.head(~erroneusGroup, \erroneusClock, [
+                \phaseBus, ~erroneusClockPhaseBus.index,
+                \bpm, ~erroneusBPM,
+                \running, ~erroneusClockRunning
+            ]);
             ~erroneusTracks = Array.fill(4, { |i|
                 Synth.tail(~erroneusGroup, \erroneusTrack, [
+                    \clockPhaseBus, ~erroneusClockPhaseBus.index,
                     \buf, ~erroneusBuffers[i].bufnum,
                     \voice, i,
                     \root, [55, 80, 135, 220][i],
@@ -362,7 +442,9 @@
             ~erroneusSampleStatus = Array.fill(4, { "Capture (no file)" });
             ~erroneusSampleNotify.value;
 
-            "Erroneus v0.3 running: four independent tracks.".postln;
+            "Erroneus v0.5 running: four tracks on one musical clock.".postln;
+            "Tempo: ~erroneusSetTempo.value(120);".postln;
+            "Sync track 1: ~erroneusSetTrackDivision.value(0, 4);".postln;
             "Control: ~erroneusTracks[0].set(\\freeze, 1, \\scanHz, 0);".postln;
             "Stop: ~erroneusStop.value;".postln;
         }).play(SystemClock);
@@ -381,4 +463,10 @@ if(~erroneusCompileOnly != true, { ~erroneusStart.value; });
 // ~erroneusTracks.do({ |t| t.set(\amp, 0.07); });
 // Four independent modulators per track, depth = 0 until enabled.
 // ~erroneusTracks[0].set(\mod1Wave, 0, \mod1Target, 1, \mod1Rate, 0.2, \mod1Depth, 0.5);
+// ~erroneusSetTempo.value(128); // Global internal transport: 30-300 BPM.
+// ~erroneusSetTrackDivision.value(0, 4); // Track 1: four grains per beat.
+// ~erroneusSetTrackDivision.value(1, 2); // Track 2: two grains per beat.
+// ~erroneusSetTrackDivision.value(0, 0); // Track 1: original free-running grains.
+// ~erroneusSetClockRunning.value(0); // Pause the musical grid (not audio).
+// ~erroneusSetClockRunning.value(1); // Resume at the held beat phase.
 // ~erroneusStop.value;

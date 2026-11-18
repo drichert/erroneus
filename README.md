@@ -2,7 +2,7 @@
 
 An open-source experimental performance instrument written in SuperCollider. Erroneus is built for granular transformation, rhythmic manipulation, live capture, sample mangling, modulation, and productive musical accidents.
 
-**Status:** v0.3 exploration. The sound engine has played on the target Latitude 7300 at approximately 18% reported server CPU. A sound-design test panel and a headless compilation check are included; sound quality and control fluidity are still under evaluation.
+**Status:** v0.5 exploration. The sound engine has played on the target Latitude 7300 at approximately 18% reported server CPU. A sound-design test panel and a headless compilation check are included; sound quality and control fluidity are still under evaluation.
 
 ## Design direction
 
@@ -27,6 +27,7 @@ No audio files required: each track has its own simple built-in source. You can 
 ## Features in the first prototype
 
 - Four independently controllable stereo-output tracks with eight-second mono circular capture buffers.
+- A shared server-side 4/4 musical clock (30–300 BPM) with opt-in, synchronized grain triggering per track.
 - Per-track sample loading with independent file buffers; preserve and return to live capture without restarting.
 - Granular playback with position, scan speed, random drift, density, duration, and pitch.
 - An eight-mode per-track resonator bank, smooth distortion, and stereo reverb.
@@ -148,6 +149,31 @@ Near Position 0, grains can collide with the active recording location and produ
 ### Performance input direction
 
 Keyboard and mouse are baseline devices for the next gesture surface. An older Wacom Bamboo/Intuos tablet should initially act through mouse-compatible X/Y movement, with pressure and pen buttons explored later through an optional Linux input-to-OSC adapter if supported by the model. Physical MPD32 mapping remains optional. Avoid hard-wiring device events into SynthDefs: gesture sources should converge on a shared set of performance commands and parameters. See ARCHITECTURE.md.
+## Shared musical clock (v0.5 experiment)
+
+Erroneus now has **one audio-server transport** for the whole instrument. The clock Synth publishes beat phase and four-beat bar phase to two dedicated audio-bus channels; all four tracks receive the same phase. This avoids independent track clocks drifting apart and provides a foundation for future rhythmic modulation, quantized capture, and synchronized stereo stems.
+
+The default tempo is **120 BPM**, running in **4/4**. Each track retains the original probabilistic free-running grain triggers until explicitly quantized. No extra GUI or input hardware is required:
+
+```supercollider
+~erroneusSetTempo.value(128);          // Global BPM: 30 to 300
+~erroneusSetTrackDivision.value(0, 4); // Track 1: four grains per beat (16ths)
+~erroneusSetTrackDivision.value(1, 2); // Track 2: two grains per beat (eighths)
+~erroneusSetTrackDivision.value(2, 1); // Track 3: one grain per beat (quarters)
+~erroneusSetTrackDivision.value(3, 8); // Track 4: eight grains per beat
+~erroneusSetTrackDivision.value(0, 0); // Return track 1 to free-running grains
+~erroneusSetClockRunning.value(0);    // Pause the clock; unsynced audio continues
+~erroneusSetClockRunning.value(1);    // Resume from its held phase
+```
+
+Allowed divisions are 0 (free), 1, 2, 4, 8 or 16 **grains per beat**. All synced tracks have the same grid origin, regardless of when their mode was enabled. BPM can change while playing, and the shared beat/bar phase changes tempo without independently resetting tracks. The clock does not yet drive sample playheads, time stretch, scan, modulation sources, or stem downbeats. Transport pause stops quantized grain triggers, **not** direct audio playback or free-running sound. The bar grid is four beats for this milestone; meter changes and external MIDI clock synchronization come later.
+
+**Note:** The clock runs inside scsynth, not a separate language-side scheduler. The clock Synth executes before the four track Synths, allowing them to read its current-block audio-rate phase for sample-accurate grid boundaries. <https://doc.sccode.org/Guides/Order-of-execution.html>
+
+### Clock validation on the laptop
+
+Use percussive material in two or more tracks, make Grain mix mostly wet, set Scan Hz to 0 and set one track to 2 grains/beat and another to 4. Verify that attacks line up on every shared beat and stay aligned through BPM changes. Test pausing/resuming the clock, reverting a track to free mode, and operating at several grain densities. A headless SynthDef compilation cannot prove audible sync or low CPU cost. Grid-division changes may trigger an extra grain mid-beat in this prototype; future quantized parameter changes will address this.
+
 ## Validation
 
 The repository includes `tests/compile.scd` and a GitHub Actions workflow.
@@ -158,7 +184,7 @@ From the repository root with `sclang` installed:
 QT_QPA_PLATFORM=offscreen sclang -D tests/compile.scd
 ```
 
-It compiles the actual `\erroneusTrack` SynthDef, including its UGen graph, parses all three GUI sources, and opens/closes all three windows under a virtual display. It checks `ERRONEUS_COMPILE_OK`, `ERRONEUS_GUI_COMPILE_OK`, `ERRONEUS_MOD_COMPILE_OK` and `ERRONEUS_MOD_GUI_SMOKE_OK`, `ERRONEUS_SAMPLE_COMPILE_OK`, and `ERRONEUS_SAMPLE_GUI_SMOKE_OK`. This does not prove audible modulation, disk-loading behavior, or real-time CPU performance; those need a real audio server.
+It compiles the actual `\erroneusTrack` and `\erroneusClock` SynthDefs, including its UGen graph, parses all three GUI sources, and opens/closes all three windows under a virtual display. It checks `ERRONEUS_CLOCK_COMPILE_OK`, `ERRONEUS_COMPILE_OK`, `ERRONEUS_GUI_COMPILE_OK`, `ERRONEUS_MOD_COMPILE_OK` and `ERRONEUS_MOD_GUI_SMOKE_OK`, `ERRONEUS_SAMPLE_COMPILE_OK`, and `ERRONEUS_SAMPLE_GUI_SMOKE_OK`. This does not prove audible modulation, disk-loading behavior, or real-time CPU performance; those need a real audio server.
 
 ## Hardware baseline
 
