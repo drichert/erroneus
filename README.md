@@ -175,3 +175,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for design principles and next steps.
 - [Torso S-4 overview](https://docs.torsoelectronics.com/s4/what-is-the-s4/s4-overview/)
 - [SuperCollider GrainBuf](https://doc.sccode.org/Classes/GrainBuf.html)
 - [SuperCollider RecordBuf](https://doc.sccode.org/Classes/RecordBuf.html)
+
+## AI-directed development record
+
+See [docs/AI_DEVELOPMENT.md](docs/AI_DEVELOPMENT.md) for the director's brief, important engineering decisions, AI contribution records, verification limits and case-study evidence. This process applies prospectively; it does not retroactively establish authorship of historical work.
