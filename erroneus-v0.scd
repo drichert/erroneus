@@ -21,7 +21,7 @@
         beatPhase = beats.frac;
         barPhase = (beats / 4).frac;
         resetPulse = T2A.ar(t_reset);
-        // 0: beat; 1: bar; 2: downbeat on reset; 3: transport gate.
+        // 0: beat; 1: bar; 2: downbeat on reset; 3: transport gate; 4: 64-beat phase.
         // A reset does not fire paused tracks until the next grid crossing.
         Out.ar(phaseBus, [beatPhase, barPhase, resetPulse, K2A.ar(gate), beats]);
     })
@@ -97,6 +97,9 @@
         [0, 1, 2].includes(mode) and: { ~erroneusLoopBeats.includes(beats) }
     }, {
         ~erroneusTracks[track].set(\samplePlayback, mode, \sampleBeats, beats);
+        ~erroneusPlaybackModes[track] = mode;
+        ~erroneusPlaybackBeats[track] = beats;
+        ~erroneusSampleNotify.value;
     }, { "Choose track 0-3, mode 0 free / 1 sync / 2 retrigger, and 1-64 power-of-two beats.".warn; });
 };
 ~erroneusSetMetronome = { |level = 0|
@@ -249,9 +252,10 @@
         loopPhase = (clockSignals[4] / sampleBeats.clip(1, 64)).frac;
         loopTrigger = ((HPZ1.ar(loopPhase) < -0.1) + clockSignals[2]).clip(0, 1) * clockSignals[3];
         syncedFrame = loopPhase * sampleFrames;
-        retriggerFrame = Sweep.ar(loopTrigger, SampleRate.ir * BufRateScale.kr(activeBuf));
+        retriggerFrame = Sweep.ar(loopTrigger, SampleRate.ir * BufRateScale.kr(activeBuf) * clockSignals[3]);
         retriggerGate = SetResetFF.ar(loopTrigger,
-            T2A.ar((Changed.kr(samplePlayback) + Changed.kr(sampleBeats) + Changed.kr(activeBuf) + Changed.kr(sampleOn)).clip(0, 1)));
+            (T2A.ar((Changed.kr(samplePlayback) + Changed.kr(sampleBeats) + Changed.kr(activeBuf) + Changed.kr(sampleOn)).clip(0, 1))
+                + (clockSignals[2] * (1 - clockSignals[3]))).clip(0, 1) * (1 - loopTrigger));
         playbackGate = Select.ar(samplePlayback.clip(0, 2), [
             DC.ar(1), clockSignals[3], clockSignals[3] * retriggerGate * (retriggerFrame < sampleFrames)
         ]);
@@ -479,6 +483,8 @@
     ~erroneusSampleBuffers = nil;
     ~erroneusSamplePaths = nil;
     ~erroneusSampleModes = nil;
+    ~erroneusPlaybackModes = nil;
+    ~erroneusPlaybackBeats = nil;
     ~erroneusSampleGeneration = nil;
     ~erroneusSampleStatus = nil;
     if(~erroneusBuffers.notNil, {
@@ -541,6 +547,8 @@
             ~erroneusSampleBuffers = Array.fill(4, { nil });
             ~erroneusSamplePaths = Array.fill(4, { nil });
             ~erroneusSampleModes = Array.fill(4, { 0 });
+            ~erroneusPlaybackModes = Array.fill(4, { 0 });
+            ~erroneusPlaybackBeats = Array.fill(4, { 4 });
             ~erroneusSampleGeneration = Array.fill(4, { 0 });
             ~erroneusSampleStatus = Array.fill(4, { "Capture (no file)" });
             ~erroneusSampleNotify.value;
