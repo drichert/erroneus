@@ -22,6 +22,8 @@ jobs:
           set -o pipefail
           timeout 120s xvfb-run -a sclang -D tests/compile.scd 2>&1 | tee /tmp/erroneus-sc-compile.log
           grep -q "ERRONEUS_COMPILE_OK" /tmp/erroneus-sc-compile.log
+          grep -q "ERRONEUS_CLOCK_COMPILE_OK" /tmp/erroneus-sc-compile.log
+          grep -q "ERRONEUS_CLOCK_REFERENCE_OK" /tmp/erroneus-sc-compile.log
           grep -q "ERRONEUS_GUI_COMPILE_OK" /tmp/erroneus-sc-compile.log
           grep -q "ERRONEUS_MOD_COMPILE_OK" /tmp/erroneus-sc-compile.log
           grep -q "ERRONEUS_SAMPLE_COMPILE_OK" /tmp/erroneus-sc-compile.log
