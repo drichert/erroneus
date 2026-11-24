@@ -178,6 +178,10 @@ Direct loaded sample playback can now lock to the shared clock; granular positio
 
 Load percussive material on two tracks, use mostly wet grains, and set divisions 2 and 4. Check shared beat boundaries while changing tempo 80 → 128 → 170 BPM. Pause/resume/reset, then return one track to free-running grains. Route an audible modulator and compare 1 versus 4 cycles/bar. Finally check capture/sample switching and CPU. The headless math-reference test is **not** proof of sample-accurate real-time behavior.
 
+### Grain sync in the main panel
+
+Choose Grain sync for the selected track: Free (Dust), quarter, eighth, sixteenth, 1/32 or 1/64. The density slider is disabled while clocked and its prior setting is retained when returning to Free. Reset track restores Free. Grain sync controls onset timing only; sample playback sync is a separate control in the sample panel.
+
 ### Deterministic sample playback
 
 The sample panel includes Free, Sync (resample), and Retrigger modes with loop lengths of 1, 2, 4, 8, 16, 32 or 64 beats. Free retains the original independent loop. Sync fits the entire loaded sample into the chosen duration, changing pitch with speed. Retrigger waits for the next matching grid boundary and plays the file at its original rate, truncating at the next boundary or leaving silence if it ends early. Sync and Retrigger pause with the transport. Clock reset realigns every loop. The click is off by default; use Click on and Reset clock in the sample panel.
