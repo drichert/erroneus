@@ -84,6 +84,10 @@
             ~erroneusClockDivisions.includes(division)
         }, {
             ~erroneusTracks[track].set(\clockDivision, division);
+            ~erroneusTrackDivisions[track] = division;
+            if(~erroneusGuiRefreshGrainSync.notNil, {
+                { ~erroneusGuiRefreshGrainSync.value; }.defer;
+            });
         }, {
             "Choose a running track 0-3 and clock division 0, 1, 2, 4, 8, or 16.".warn;
         }
@@ -484,6 +488,7 @@
     ~erroneusSamplePaths = nil;
     ~erroneusSampleModes = nil;
     ~erroneusPlaybackModes = nil;
+    ~erroneusTrackDivisions = nil;
     ~erroneusPlaybackBeats = nil;
     ~erroneusSampleGeneration = nil;
     ~erroneusSampleStatus = nil;
@@ -548,6 +553,7 @@
             ~erroneusSamplePaths = Array.fill(4, { nil });
             ~erroneusSampleModes = Array.fill(4, { 0 });
             ~erroneusPlaybackModes = Array.fill(4, { 0 });
+            ~erroneusTrackDivisions = Array.fill(4, { 0 });
             ~erroneusPlaybackBeats = Array.fill(4, { 4 });
             ~erroneusSampleGeneration = Array.fill(4, { 0 });
             ~erroneusSampleStatus = Array.fill(4, { "Capture (no file)" });
