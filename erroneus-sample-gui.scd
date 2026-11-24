@@ -19,6 +19,10 @@
             }, { 0 });
             indicator = if(mode == 1, { "[SAMPLE] " }, { "[CAPTURE] " });
             label.string_(indicator ++ status);
+            if(~erroneusPlaybackModes.notNil and: { ~erroneusSamplePlaybackMenus.notNil }, {
+                ~erroneusSamplePlaybackMenus[index].value_(~erroneusPlaybackModes[index]);
+                ~erroneusSampleBeatMenus[index].value_(~erroneusLoopBeats.indexOf(~erroneusPlaybackBeats[index]));
+            });
         });
     });
 };
@@ -33,7 +37,7 @@
         }, {
             window = Window(
                 "Erroneus | Sample & Capture",
-                Rect(210, 165, 960, 380)
+                Rect(100, 100, 960, 480)
             );
             ~erroneusSampleWindow = window;
             heading = StaticText(window, Rect(18, 12, 900, 27));
@@ -41,11 +45,13 @@
             heading.font_(Font.default.boldVariant);
 
             labels = Array.newClear(4);
+            ~erroneusSamplePlaybackMenus = Array.newClear(4);
+            ~erroneusSampleBeatMenus = Array.newClear(4);
             makeRow = { |index|
                 var y, trackLabel, loadButton, sampleButton;
-                var captureButton, unloadButton, statusLabel;
+                var captureButton, unloadButton, statusLabel, playbackMenu, beatMenu;
 
-                y = 54 + (index * 58);
+                y = 54 + (index * 78);
                 trackLabel = StaticText(window, Rect(18, y, 70, 24));
                 trackLabel.string_("Track " ++ (index + 1));
 
@@ -77,11 +83,29 @@
 
                 statusLabel = StaticText(window, Rect(540, y, 400, 30));
                 labels[index] = statusLabel;
+                playbackMenu = PopUpMenu(window, Rect(92, y + 34, 145, 25));
+                playbackMenu.items_(["Free", "Sync (resample)", "Retrigger"]);
+                beatMenu = PopUpMenu(window, Rect(247, y + 34, 120, 25));
+                beatMenu.items_(~erroneusLoopBeats.collect({ |n| n.asString ++ " beats" }));
+                ~erroneusSamplePlaybackMenus[index] = playbackMenu;
+                ~erroneusSampleBeatMenus[index] = beatMenu;
+                playbackMenu.action_({
+                    ~erroneusSetSamplePlayback.value(index, playbackMenu.value, ~erroneusLoopBeats[beatMenu.value]);
+                });
+                beatMenu.action_({
+                    ~erroneusSetSamplePlayback.value(index, playbackMenu.value, ~erroneusLoopBeats[beatMenu.value]);
+                });
             };
             4.do({ |index| makeRow.value(index); });
             ~erroneusSampleLabels = labels;
 
-            note = StaticText(window, Rect(18, 292, 918, 64));
+            Button(window, Rect(18, 369, 120, 28))
+                .states_([["Click off"], ["Click on"]])
+                .action_({ |button| ~erroneusSetMetronome.value(button.value * 0.07); });
+            Button(window, Rect(150, 369, 120, 28))
+                .states_([["Reset clock"]])
+                .action_({ ~erroneusResetClock.value; });
+            note = StaticText(window, Rect(18, 405, 918, 64));
             note.string_(
                 "Load WAV/AIFF (mono, or first channel of a stereo file). Max 60 sec.\n"
                 ++ "Sample uses the loaded file; Capture returns to the preserved 8-second live buffer.\n"
@@ -92,6 +116,8 @@
             window.onClose_({
                 ~erroneusSampleWindow = nil;
                 ~erroneusSampleLabels = nil;
+                ~erroneusSamplePlaybackMenus = nil;
+                ~erroneusSampleBeatMenus = nil;
             });
             ~erroneusSampleRefresh.value;
             window.front;
