@@ -5,8 +5,8 @@
 // For headless compilation, set ~erroneusCompileOnly = true before loading.
 
 (
-// One server-side transport drives all four tracks. The audio bus carries
-// normalized beat phase (channel 0) and four-beat bar phase (channel 1).
+// One server-side transport drives all four tracks. A private four-channel
+// audio bus carries beat/bar phase, reset downbeat pulse and run gate.
 ~erroneusMakeClockDef = {
     SynthDef(\erroneusClock, {
         |phaseBus = 0, bpm = 120, running = 1, t_reset = 0|
@@ -66,7 +66,7 @@
 ~erroneusSetModSyncDivision = { |track, slot, division|
     if(
         ~erroneusSampleValidTrack.value(track) and: {
-            slot.isInteger and: { (slot >= 0) and: { slot < 4 } }
+            [0, 1, 2, 3].includes(slot)
         } and: { ~erroneusModSyncDivisions.includes(division) },
         {
             ~erroneusTracks[track].set(
