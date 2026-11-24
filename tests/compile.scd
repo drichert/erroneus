@@ -17,6 +17,28 @@ try({
     if(~erroneusClockDivisions != [0, 1, 2, 4, 8, 16], {
         Error("Shared clock division options changed").throw;
     });
+    if(~erroneusModSyncDivisions != [0, 1, 2, 4, 8, 16], {
+        Error("Shared modulation sync divisions changed").throw;
+    });
+    if(~erroneusResetClock.isNil or: { ~erroneusSetModSyncDivision.isNil }, {
+        Error("Clock reset or modulation sync setter missing").throw;
+    });
+    // Math-only reference test: 120 BPM, 4 grains/beat, 2.1 seconds
+    // at 48 kHz has 16 subdivision boundaries. This does NOT prove
+    // scsynth scheduling or audio bus/UGen behavior.
+    {
+        var beatCount = 0.0, lastGrid = 0.0, grid, ticks = 0;
+        ((48000 * 2) + 4800).do({
+            beatCount = (beatCount + (120 / (60.0 * 48000))).wrap(0, 4);
+            grid = (beatCount.frac * 4).frac;
+            if(grid < (lastGrid - 0.1), { ticks = ticks + 1; });
+            lastGrid = grid;
+        });
+        if(ticks != 16, {
+            Error("Clock reference model missed subdivision boundaries").throw;
+        });
+    }.value;
+    "ERRONEUS_CLOCK_REFERENCE_OK".postln;
     ~erroneusSetTempo.value(136);
     if(~erroneusBPM != 136, {
         Error("Tempo setter failed to store valid BPM").throw;
