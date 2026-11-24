@@ -45,6 +45,17 @@
     });
 };
 
+~erroneusGuiRefreshGrainSync = {
+    var division, synced;
+    if(~erroneusGuiGrainSyncMenu.notNil and: { ~erroneusTrackDivisions.notNil }, {
+        division = ~erroneusTrackDivisions[~erroneusGuiSelectedTrack];
+        synced = division > 0;
+        ~erroneusGuiGrainSyncMenu.value_(~erroneusClockDivisions.indexOf(division));
+        ~erroneusGuiRows[3][1].enabled_(synced.not);
+        ~erroneusGuiGrainSyncStatus.string_(if(synced, { "Density bypassed: clock controls grain rate" }, { "Density controls random grain rate" }));
+    });
+};
+
 ~erroneusGuiRefresh = {
     var trackValues;
     trackValues = ~erroneusGuiValues[~erroneusGuiSelectedTrack];
@@ -59,11 +70,12 @@
     });
     ~erroneusGuiFreezeButton.value_(trackValues[\freeze].asInteger);
     ~erroneusGuiSourceButton.value_(trackValues[\sourceMode].asInteger);
+    ~erroneusGuiRefreshGrainSync.value;
 };
 
 ~erroneusOpenGUI = {
     var window, trackSelector, freezeButton, sourceButton, resetButton;
-    var silenceButton, title, footer, rows, rowFactory;
+    var silenceButton, title, footer, rows, rowFactory, syncMenu, syncStatus;
 
     if(~erroneusTracks.isNil or: { ~erroneusTracks.size != 4 }, {
         "Start erroneus-v0.scd and wait for all four tracks before opening the GUI.".warn;
@@ -79,11 +91,11 @@
             ~erroneusGuiSelectedTrack = 0;
             rows = List.new;
 
-            window = Window("Erroneus | Control Fluidity Lab", Rect(160, 100, 790, 690));
+            window = Window("Erroneus | Control Fluidity Lab", Rect(160, 65, 790, 720));
             ~erroneusGuiWindow = window;
 
             title = StaticText(window, Rect(18, 12, 740, 22));
-            title.string_("ERRONEUS  |  v0.1 sound-shaping controls");
+            title.string_("ERRONEUS  |  sound-shaping controls");
             title.font_(Font.default.boldVariant);
 
             StaticText(window, Rect(18, 47, 56, 24)).string_("Track");
@@ -118,6 +130,7 @@
                 ~erroneusGuiValues[i].keysValuesDo({ |key, value|
                     ~erroneusTracks[i].set(key, value);
                 });
+                ~erroneusSetTrackDivision.value(i, 0);
                 ~erroneusGuiRefresh.value;
             });
 
@@ -132,11 +145,22 @@
                 ~erroneusGuiRefresh.value;
             });
 
+            StaticText(window, Rect(18, 78, 125, 24)).string_("Grain sync");
+            syncMenu = PopUpMenu(window, Rect(153, 78, 190, 24));
+            syncMenu.items_(["Free (Dust)", "1/4 - quarter", "1/8 - eighth", "1/16 - sixteenth", "1/32", "1/64"]);
+            syncMenu.action_({ |menu|
+                ~erroneusSetTrackDivision.value(~erroneusGuiSelectedTrack, ~erroneusClockDivisions[menu.value]);
+                ~erroneusGuiRefreshGrainSync.value;
+            });
+            syncStatus = StaticText(window, Rect(355, 78, 410, 24));
+            ~erroneusGuiGrainSyncMenu = syncMenu;
+            ~erroneusGuiGrainSyncStatus = syncStatus;
+
             rowFactory = { |entry, index|
                 var key, spec, y, label, slider, readout;
                 key = entry[0];
                 spec = ControlSpec.new(entry[2], entry[3], entry[4]);
-                y = 90 + (index * 30);
+                y = 120 + (index * 30);
                 label = StaticText(window, Rect(18, y, 132, 24));
                 label.string_(entry[1]);
                 slider = Slider(window, Rect(153, y + 2, 508, 20));
@@ -153,7 +177,7 @@
                 rowFactory.value(entry, index);
             });
 
-            footer = StaticText(window, Rect(18, 601, 755, 61));
+            footer = StaticText(window, Rect(18, 631, 755, 61));
             footer.string_(
                 "Input capture Position = delay behind write head; sample/synth = buffer location.\n"
                 ++ "Scan Hz 0 holds that position; Freeze holds the capture reference.\n"
@@ -171,6 +195,8 @@
             window.onClose_({
                 ~erroneusGuiWindow = nil;
                 ~erroneusGuiRows = nil;
+                ~erroneusGuiGrainSyncMenu = nil;
+                ~erroneusGuiGrainSyncStatus = nil;
                 ~erroneusGuiFreezeButton = nil;
                 ~erroneusGuiSourceButton = nil;
             });
