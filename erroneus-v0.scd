@@ -113,7 +113,7 @@
         c = In.ar(phaseBus, 5);
         tick = ((HPZ1.ar(c[0]) < -0.1) + c[2]).clip(0, 1) * c[3];
         accent = Latch.ar((c[1] < 0.01), tick);
-        click = SinOsc.ar(Select.ar(accent, [1000, 1700])) * Decay2.ar(tick, 0.001, 0.035);
+        click = SinOsc.ar(1000 + (accent * 700)) * Decay2.ar(tick, 0.001, 0.035);
         Out.ar(out, Limiter.ar(click * Lag.kr(amp, 0.02), 0.7) ! 2);
     })
 };
