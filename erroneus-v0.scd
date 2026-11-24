@@ -5,8 +5,8 @@
 // For headless compilation, set ~erroneusCompileOnly = true before loading.
 
 (
-// One server-side transport drives all four tracks. A private four-channel
-// audio bus carries beat/bar phase, reset downbeat pulse and run gate.
+// One server-side transport drives all four tracks. A private five-channel
+// audio bus carries beat/bar phase, reset pulse, run gate and 64-beat phase.
 ~erroneusMakeClockDef = {
     SynthDef(\erroneusClock, {
         |phaseBus = 0, bpm = 120, running = 1, t_reset = 0|
@@ -16,14 +16,14 @@
         // a single block-aligned reset without needing a delayed /n_set(0).
         beats = Phasor.ar(
             t_reset, (bpm.clip(30, 300) / 60.0) * SampleDur.ir * gate,
-            0, 4
+            0, 64
         );
         beatPhase = beats.frac;
-        barPhase = beats / 4;
+        barPhase = (beats / 4).frac;
         resetPulse = T2A.ar(t_reset);
         // 0: beat; 1: bar; 2: downbeat on reset; 3: transport gate.
         // A reset does not fire paused tracks until the next grid crossing.
-        Out.ar(phaseBus, [beatPhase, barPhase, resetPulse, K2A.ar(gate)]);
+        Out.ar(phaseBus, [beatPhase, barPhase, resetPulse, K2A.ar(gate), beats]);
     })
 };
 
@@ -90,9 +90,35 @@
     );
 };
 
+// Loop lengths divide the master 64-beat cycle exactly.
+~erroneusLoopBeats = [1, 2, 4, 8, 16, 32, 64];
+~erroneusSetSamplePlayback = { |track, mode = 0, beats = 4|
+    if(~erroneusSampleValidTrack.value(track) and: {
+        [0, 1, 2].includes(mode) and: { ~erroneusLoopBeats.includes(beats) }
+    }, {
+        ~erroneusTracks[track].set(\samplePlayback, mode, \sampleBeats, beats);
+    }, { "Choose track 0-3, mode 0 free / 1 sync / 2 retrigger, and 1-64 power-of-two beats.".warn; });
+};
+~erroneusSetMetronome = { |level = 0|
+    if(~erroneusMetronome.notNil and: { level.isNumber and: { level >= 0 and: { level <= 0.15 } } }, {
+        ~erroneusMetronome.set(\amp, level);
+    }, { "Start engine and choose metronome level 0-0.15.".warn; });
+};
+~erroneusMakeMetronomeDef = {
+    SynthDef(\erroneusMetronome, { |phaseBus = 0, amp = 0, out = 0|
+        var c, tick, accent, click;
+        c = In.ar(phaseBus, 5);
+        tick = ((HPZ1.ar(c[0]) < -0.1) + c[2]).clip(0, 1) * c[3];
+        accent = Latch.ar((c[1] < 0.01), tick);
+        click = SinOsc.ar(Select.ar(accent, [1000, 1700])) * Decay2.ar(tick, 0.001, 0.035);
+        Out.ar(out, Limiter.ar(click * Lag.kr(amp, 0.02), 0.7) ! 2);
+    })
+};
+
 ~erroneusMakeTrackDef = {
     SynthDef(\erroneusTrack, {
         |out = 0, buf = 0, sampleBuf = 0, sampleMode = 0, clockPhaseBus = 0, clockDivision = 0,
+         samplePlayback = 0, sampleBeats = 4,
          voice = 0, sourceMode = 0, inputGain = 0.25,
          amp = 0.13, grainMix = 0.8, density = 15,
          grainDur = 0.22, pitch = 1, position = 0.35,
@@ -107,6 +133,7 @@
 
         var base, internal, external, material, captureMaterial, sampleDirect;
         var samplePhase, activeBuf, sampleOn, phase, readPos;
+        var loopPhase, loopTrigger, syncedFrame, retriggerFrame, retriggerGate, sampleFrames, playbackGate;
         var recordEnabled, captureWriteHead, captureReadPos, absoluteReadPos;
         var grainTrigger, freeGrainTrigger, beatPhase, barPhase, gridPhase, gridTrigger;
         var clockSignals, clockReset, clockGate;
@@ -120,7 +147,7 @@
 
         // All four tracks read a single server-owned phase timeline.
         // Ordered clock node supplies current-block samples on these buses.
-        clockSignals = In.ar(clockPhaseBus, 4);
+        clockSignals = In.ar(clockPhaseBus, 5);
         beatPhase = clockSignals[0];
         barPhase = clockSignals[1];
         clockReset = A2K.kr(clockSignals[2]);
@@ -215,10 +242,22 @@
             Phasor.ar(0, recordEnabled, 0, BufFrames.kr(buf))
         ) / BufFrames.kr(buf);
         activeBuf = Select.kr(sampleOn, [buf, sampleBuf]);
-        samplePhase = Phasor.ar(
-            0, BufRateScale.kr(activeBuf), 0, BufFrames.kr(activeBuf)
-        );
-        sampleDirect = BufRd.ar(1, activeBuf, samplePhase, 1, 4) ! 2;
+        sampleFrames = BufFrames.kr(activeBuf).max(2);
+        samplePhase = Phasor.ar(0, BufRateScale.kr(activeBuf), 0, sampleFrames);
+        // Every supported loop length divides the shared 64-beat phase.
+        // Sync resamples to fill the loop; retrigger keeps native pitch/speed.
+        loopPhase = (clockSignals[4] / sampleBeats.clip(1, 64)).frac;
+        loopTrigger = ((HPZ1.ar(loopPhase) < -0.1) + clockSignals[2]).clip(0, 1) * clockSignals[3];
+        syncedFrame = loopPhase * sampleFrames;
+        retriggerFrame = Sweep.ar(loopTrigger, SampleRate.ir * BufRateScale.kr(activeBuf));
+        retriggerGate = SetResetFF.ar(loopTrigger,
+            T2A.ar((Changed.kr(samplePlayback) + Changed.kr(sampleBeats) + Changed.kr(activeBuf) + Changed.kr(sampleOn)).clip(0, 1)));
+        playbackGate = Select.ar(samplePlayback.clip(0, 2), [
+            DC.ar(1), clockSignals[3], clockSignals[3] * retriggerGate * (retriggerFrame < sampleFrames)
+        ]);
+        sampleDirect = (BufRd.ar(1, activeBuf, Select.ar(samplePlayback.clip(0, 2), [
+            samplePhase, syncedFrame, retriggerFrame.clip(0, sampleFrames - 1)
+        ]), 1, 4) * Lag.ar(playbackGate, 0.003)) ! 2;
         material = (captureMaterial * (1 - sampleOn)) + (sampleDirect * sampleOn);
 
         // Scan and drift offset either reference system. Scan Hz 0 holds
@@ -425,6 +464,7 @@
         ~erroneusGroup = nil;
     });
     ~erroneusClock = nil;
+    ~erroneusMetronome = nil;
     if(~erroneusClockPhaseBus.notNil, {
         ~erroneusClockPhaseBus.free;
         ~erroneusClockPhaseBus = nil;
@@ -459,6 +499,7 @@
 
     s.waitForBoot({
         ~erroneusMakeClockDef.value.add;
+        ~erroneusMakeMetronomeDef.value.add;
         ~erroneusMakeTrackDef.value.add;
         Routine({
             s.sync;
@@ -473,7 +514,7 @@
             });
             s.sync;
 
-            ~erroneusClockPhaseBus = Bus.audio(s, 4);
+            ~erroneusClockPhaseBus = Bus.audio(s, 5);
             ~erroneusGroup = Group.head(s);
             // Clock must execute before track In.ar readers in every block.
             ~erroneusClock = Synth.head(~erroneusGroup, \erroneusClock, [
@@ -493,6 +534,9 @@
                 ])
             });
 
+            ~erroneusMetronome = Synth.tail(~erroneusGroup, \erroneusMetronome, [
+                \phaseBus, ~erroneusClockPhaseBus.index
+            ]);
             ~erroneusSampleSession = (~erroneusSampleSession ? 0) + 1;
             ~erroneusSampleBuffers = Array.fill(4, { nil });
             ~erroneusSamplePaths = Array.fill(4, { nil });
