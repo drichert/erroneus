@@ -14,6 +14,10 @@ try({
         Error("Shared server clock SynthDef factory was not loaded").throw;
     });
     ~erroneusMakeClockDef.value.asBytes;
+    ~erroneusMakeMetronomeDef.value.asBytes;
+    if(~erroneusLoopBeats != [1, 2, 4, 8, 16, 32, 64], { Error("Invalid loop lengths").throw; });
+    if(~erroneusSetSamplePlayback.isNil or: { ~erroneusSetMetronome.isNil }, { Error("Missing playback API").throw; });
+    ~erroneusLoopBeats.do({ |n| if((64 % n) != 0, { Error("Loop does not divide master cycle").throw; }); });
     if(~erroneusClockDivisions != [0, 1, 2, 4, 8, 16], {
         Error("Shared clock division options changed").throw;
     });
