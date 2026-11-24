@@ -172,11 +172,24 @@ The default is **120 BPM in 4/4**. With the engine running, evaluate these comma
 
 Tempo changes preserve the current beat/bar phase. Reset produces a new downbeat while playing; resetting while paused positions the clock at the bar start without sounding an event. Pause holds musical phase and stops quantized grain triggers and new synced random/envelope events. Direct playback, capture and free-running modulations continue; existing envelope and smoothing tails can decay. Engine restart resets the musical phase. Subdivision changes mid-beat are not quantized and may cause an immediate additional event.
 
-This first clock does **not** lock sample playheads, scan, capture, time stretch, stem playback or external MIDI clock. Meter is fixed at 4/4, with no swing or seek. The clock Synth executes before all four tracks for shared timing (see https://doc.sccode.org/Guides/Order-of-execution.html). The hardware-controller interface comes later.
+Direct loaded sample playback can now lock to the shared clock; granular position, capture, scan, pitch-preserving stretching, external MIDI and stereo stem support remain separate work.
 
 ### Clock listening checklist
 
 Load percussive material on two tracks, use mostly wet grains, and set divisions 2 and 4. Check shared beat boundaries while changing tempo 80 → 128 → 170 BPM. Pause/resume/reset, then return one track to free-running grains. Route an audible modulator and compare 1 versus 4 cycles/bar. Finally check capture/sample switching and CPU. The headless math-reference test is **not** proof of sample-accurate real-time behavior.
+
+### Deterministic sample playback
+
+The sample panel includes Free, Sync (resample), and Retrigger modes with loop lengths of 1, 2, 4, 8, 16, 32 or 64 beats. Free retains the original independent loop. Sync fits the entire loaded sample into the chosen duration, changing pitch with speed. Retrigger waits for the next matching grid boundary and plays the file at its original rate, truncating at the next boundary or leaving silence if it ends early. Sync and Retrigger pause with the transport. Clock reset realigns every loop. The click is off by default; use Click on and Reset clock in the sample panel.
+
+For timing tests, load a trimmed drum loop, set Grain Mix, resonance mix, reverb, feedback and modulation depths to zero, select Sync and the correct number of beats, turn on the click, then reset the clock. Use a second loop with the same or another supported beat length. Change BPM and listen for alignment. Switch to Retrigger to compare native-rate playback. Direct sample playback is independent of the grain position, pitch, density and Dust trigger controls. Sync is resampling, not pitch-preserving stretching. Mode/length changes can jump the playhead and click; the current implementation is not a quantized launch system. Loop lengths are deliberately restricted to powers of two.
+
+```supercollider
+~erroneusSetSamplePlayback.value(0, 1, 4); // track 1, Sync, four beats
+~erroneusSetSamplePlayback.value(1, 2, 8); // track 2, Retrigger, eight beats
+~erroneusSetMetronome.value(0.07);
+~erroneusResetClock.value;
+```
 
 ## Validation
 
