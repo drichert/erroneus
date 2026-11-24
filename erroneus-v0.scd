@@ -9,21 +9,29 @@
 // normalized beat phase (channel 0) and four-beat bar phase (channel 1).
 ~erroneusMakeClockDef = {
     SynthDef(\erroneusClock, {
-        |phaseBus = 0, bpm = 120, running = 1|
-        var beats, beatPhase, barPhase;
+        |phaseBus = 0, bpm = 120, running = 1, t_reset = 0|
+        var beats, beatPhase, barPhase, resetPulse, gate;
+        gate = running.clip(0, 1);
+        // t_reset is a SuperCollider trigger control: each message generates
+        // a single block-aligned reset without needing a delayed /n_set(0).
         beats = Phasor.ar(
-            0, (bpm.clip(30, 300) / 60.0) * SampleDur.ir * running.clip(0, 1),
+            t_reset, (bpm.clip(30, 300) / 60.0) * SampleDur.ir * gate,
             0, 4
         );
         beatPhase = beats.frac;
         barPhase = beats / 4;
-        Out.ar(phaseBus, [beatPhase, barPhase]);
+        resetPulse = T2A.ar(t_reset);
+        // 0: beat; 1: bar; 2: downbeat on reset; 3: transport gate.
+        // A reset does not fire paused tracks until the next grid crossing.
+        Out.ar(phaseBus, [beatPhase, barPhase, resetPulse, K2A.ar(gate)]);
     })
 };
 
 // Default free-running grains remain unchanged. Valid synchronized divisions
 // are the number of evenly spaced grains per beat on a common 4/4 grid.
 ~erroneusClockDivisions = [0, 1, 2, 4, 8, 16];
+// Cycles per four-beat bar for each modulation slot; zero is unsynced Hz.
+~erroneusModSyncDivisions = [0, 1, 2, 4, 8, 16];
 ~erroneusBPM = ~erroneusBPM ? 120;
 ~erroneusClockRunning = ~erroneusClockRunning ? 1;
 
@@ -45,6 +53,29 @@
     }, {
         "Clock running must be 0 (pause) or 1 (resume).".warn;
     });
+};
+
+~erroneusResetClock = {
+    if(~erroneusClock.notNil, {
+        ~erroneusClock.set(\t_reset, 1);
+    }, {
+        "Start Erroneus before resetting the musical clock.".warn;
+    });
+};
+
+~erroneusSetModSyncDivision = { |track, slot, division|
+    if(
+        ~erroneusSampleValidTrack.value(track) and: {
+            slot.isInteger and: { (slot >= 0) and: { slot < 4 } }
+        } and: { ~erroneusModSyncDivisions.includes(division) },
+        {
+            ~erroneusTracks[track].set(
+                ("mod" ++ (slot + 1).asString ++ "SyncDivision").asSymbol, division
+            );
+        }, {
+            "Choose track 0-3, mod slot 0-3, and sync division 0, 1, 2, 4, 8 or 16.".warn;
+        }
+    );
 };
 
 ~erroneusSetTrackDivision = { |track, division|
@@ -69,15 +100,16 @@
          ringMix = 0.35, root = 110, ringTime = 0.15,
          drive = 0.15, space = 0.35, feedback = 0.2,
          freeze = 0, evolve = 0.25,
-         mod1Wave = 0, mod1Target = 0, mod1Rate = 0.12, mod1Depth = 0,
-         mod2Wave = 2, mod2Target = 0, mod2Rate = 0.30, mod2Depth = 0,
-         mod3Wave = 3, mod3Target = 0, mod3Rate = 0.60, mod3Depth = 0,
-         mod4Wave = 4, mod4Target = 0, mod4Rate = 1.00, mod4Depth = 0|
+         mod1Wave = 0, mod1Target = 0, mod1Rate = 0.12, mod1Depth = 0, mod1SyncDivision = 0,
+         mod2Wave = 2, mod2Target = 0, mod2Rate = 0.30, mod2Depth = 0, mod2SyncDivision = 0,
+         mod3Wave = 3, mod3Target = 0, mod3Rate = 0.60, mod3Depth = 0, mod3SyncDivision = 0,
+         mod4Wave = 4, mod4Target = 0, mod4Rate = 1.00, mod4Depth = 0, mod4SyncDivision = 0|
 
         var base, internal, external, material, captureMaterial, sampleDirect;
         var samplePhase, activeBuf, sampleOn, phase, readPos;
         var recordEnabled, captureWriteHead, captureReadPos, absoluteReadPos;
-        var grainTrigger, freeGrainTrigger, beatPhase, gridPhase, gridTrigger;
+        var grainTrigger, freeGrainTrigger, beatPhase, barPhase, gridPhase, gridTrigger;
+        var clockSignals, clockReset, clockGate;
         var granular, sound, ring, colored;
         var feedbackSignal, recordSignal, outputSignal, drift;
         var waveSignal, modFor, m1, m2, m3, m4;
@@ -86,26 +118,51 @@
         var effectiveRingMix, effectiveRoot, effectiveRingTime;
         var effectiveDrive, effectiveSpace, effectiveFeedback;
 
-        // Four per-track modulators run inside scsynth, not over OSC.
-        // Shape indices: 0 sine, 1 triangle, 2 step random,
-        // 3 smooth random, 4 triggered positive decay envelope.
-        waveSignal = { |hz, shape|
-            var rate, envelope;
+        // All four tracks read a single server-owned phase timeline.
+        // Ordered clock node supplies current-block samples on these buses.
+        clockSignals = In.ar(clockPhaseBus, 4);
+        beatPhase = clockSignals[0];
+        barPhase = clockSignals[1];
+        clockReset = A2K.kr(clockSignals[2]);
+        clockGate = A2K.kr(clockSignals[3]);
+
+        // Four modulators per track. Default Hz mode stays unchanged.
+        // Sync divisions are cycles per bar: 1=whole, 4=quarter, 16=sixteenth.
+        // Grid-derived phase locks periodic waves; random/envelope shapes
+        // receive grid-derived triggers. No separate per-track tempo oscillator.
+        waveSignal = { |hz, shape, syncDivision|
+            var rate, freeEnvelope, freeWave, syncPhase, syncTrigger;
+            var stepRandom, syncEnvelope, syncWave;
             rate = hz.clip(0.03, 20);
-            envelope = Decay2.kr(
+            freeEnvelope = Decay2.kr(
                 Impulse.kr(rate), 0.008, (0.40 / rate).clip(0.015, 2.0)
             ).clip(0, 1);
-            Select.kr(shape.clip(0, 4), [
+            freeWave = Select.kr(shape.clip(0, 4), [
                 SinOsc.kr(rate), LFTri.kr(rate),
                 LFNoise0.kr(rate), LFNoise1.kr(rate),
-                envelope
-            ])
+                freeEnvelope
+            ]);
+            syncPhase = A2K.kr((barPhase * syncDivision.clip(1, 16)).frac);
+            syncTrigger = (
+                ((HPZ1.kr(syncPhase) < (-0.1)) + clockReset).clip(0, 1)
+                * clockGate
+            );
+            stepRandom = TRand.kr(-1, 1, syncTrigger);
+            syncEnvelope = Decay2.kr(syncTrigger, 0.008, 0.15).clip(0, 1);
+            syncWave = Select.kr(shape.clip(0, 4), [
+                (syncPhase * 6.283185307179586).sin,
+                1 - ((syncPhase * 4) - 2).abs,
+                stepRandom,
+                Lag.kr(stepRandom, 0.12),
+                syncEnvelope
+            ]);
+            Select.kr(syncDivision > 0, [freeWave, syncWave])
         };
 
-        m1 = waveSignal.value(mod1Rate, mod1Wave) * mod1Depth.clip(0, 1);
-        m2 = waveSignal.value(mod2Rate, mod2Wave) * mod2Depth.clip(0, 1);
-        m3 = waveSignal.value(mod3Rate, mod3Wave) * mod3Depth.clip(0, 1);
-        m4 = waveSignal.value(mod4Rate, mod4Wave) * mod4Depth.clip(0, 1);
+        m1 = waveSignal.value(mod1Rate, mod1Wave, mod1SyncDivision) * mod1Depth.clip(0, 1);
+        m2 = waveSignal.value(mod2Rate, mod2Wave, mod2SyncDivision) * mod2Depth.clip(0, 1);
+        m3 = waveSignal.value(mod3Rate, mod3Wave, mod3SyncDivision) * mod3Depth.clip(0, 1);
+        m4 = waveSignal.value(mod4Rate, mod4Wave, mod4SyncDivision) * mod4Depth.clip(0, 1);
 
         // Each modulator routes to exactly one destination; different
         // modulators may share a destination, and sums are bounded.
@@ -182,9 +239,11 @@
         // Shared phase from the clock Synth preceding every track in the
         // same node group. Audio-rate grid triggers align across all tracks.
         // Division = 0 keeps the original probabilistic free-running grains.
-        beatPhase = In.ar(clockPhaseBus, 2)[0];
         gridPhase = (beatPhase * clockDivision.clip(0, 16)).frac;
-        gridTrigger = (HPZ1.ar(gridPhase) < (-0.1));
+        gridTrigger = (
+            ((HPZ1.ar(gridPhase) < (-0.1)) + clockSignals[2]).clip(0, 1)
+            * clockSignals[3]
+        );
         freeGrainTrigger = Dust.kr(
             effectiveDensity *
             (1 + (LFNoise1.kr(0.4) * evolve)).clip(0.1, 1.9)
@@ -414,7 +473,7 @@
             });
             s.sync;
 
-            ~erroneusClockPhaseBus = Bus.audio(s, 2);
+            ~erroneusClockPhaseBus = Bus.audio(s, 4);
             ~erroneusGroup = Group.head(s);
             // Clock must execute before track In.ar readers in every block.
             ~erroneusClock = Synth.head(~erroneusGroup, \erroneusClock, [
@@ -445,6 +504,8 @@
             "Erroneus v0.5 running: four tracks on one musical clock.".postln;
             "Tempo: ~erroneusSetTempo.value(120);".postln;
             "Sync track 1: ~erroneusSetTrackDivision.value(0, 4);".postln;
+            "Sync mod 1: ~erroneusSetModSyncDivision.value(0, 0, 4);".postln;
+            "Bar reset: ~erroneusResetClock.value;".postln;
             "Control: ~erroneusTracks[0].set(\\freeze, 1, \\scanHz, 0);".postln;
             "Stop: ~erroneusStop.value;".postln;
         }).play(SystemClock);
@@ -469,4 +530,7 @@ if(~erroneusCompileOnly != true, { ~erroneusStart.value; });
 // ~erroneusSetTrackDivision.value(0, 0); // Track 1: original free-running grains.
 // ~erroneusSetClockRunning.value(0); // Pause the musical grid (not audio).
 // ~erroneusSetClockRunning.value(1); // Resume at the held beat phase.
+// ~erroneusResetClock.value; // Reset all synced tracks to bar 1, beat 1.
+// ~erroneusSetModSyncDivision.value(0, 0, 4); // First mod: one cycle per beat.
+// ~erroneusSetModSyncDivision.value(0, 0, 0); // First mod: return to Hz mode.
 // ~erroneusStop.value;
