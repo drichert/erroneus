@@ -1,4 +1,4 @@
-// Erroneus v0.3: experimental four-track granular feedback instrument.
+// Erroneus v0.5: experimental four-track granular feedback instrument.
 // Stock SuperCollider only. Start with low output volume.
 //
 // Evaluate the entire parenthesized block in SuperCollider, or execute this file.
