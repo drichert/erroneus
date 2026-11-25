@@ -91,8 +91,17 @@ try({
     if(~erroneusUseCapture.isNil or: { ~erroneusUnloadSample.isNil }, {
         Error("Sample buffer lifecycle API was not installed").throw;
     });
-    if(~erroneusSampleMaxSeconds != 60, {
-        Error("Unexpected maximum sample duration").throw;
+    if(~erroneusSampleMaxFrames != 16777216, {
+        Error("Unexpected full-file BufRd frame-addressing guard").throw;
+    });
+    if(~erroneusSampleMemoryBudgetMiB <= 0, {
+        Error("Sample memory budget must be positive").throw;
+    });
+    if(~erroneusSampleReservedBytes != 0, {
+        Error("Sample memory reservations must start empty").throw;
+    });
+    if(~erroneusLaunchStems.isNil or: { ~erroneusSampleCommit.isNil }, {
+        Error("Stereo stem launch or paired-buffer commit API missing").throw;
     });
     if(~erroneusSampleValidTrack.value(0), {
         Error("Track access must be disabled before boot").throw;
