@@ -1,28 +1,150 @@
-// Erroneus v0.3: experimental four-track granular feedback instrument.
+// Erroneus v0.5: experimental four-track granular feedback instrument.
 // Stock SuperCollider only. Start with low output volume.
 //
 // Evaluate the entire parenthesized block in SuperCollider, or execute this file.
 // For headless compilation, set ~erroneusCompileOnly = true before loading.
 
 (
+// One server-side transport drives all four tracks. A private five-channel
+// audio bus carries beat/bar phase, reset pulse, run gate and 64-beat phase.
+~erroneusMakeClockDef = {
+    SynthDef(\erroneusClock, {
+        |phaseBus = 0, bpm = 120, running = 1, t_reset = 0|
+        var beats, beatPhase, barPhase, resetPulse, gate;
+        gate = running.clip(0, 1);
+        // t_reset is a SuperCollider trigger control: each message generates
+        // a single block-aligned reset without needing a delayed /n_set(0).
+        beats = Phasor.ar(
+            t_reset, (bpm.clip(30, 300) / 60.0) * SampleDur.ir * gate,
+            0, 64
+        );
+        beatPhase = beats.frac;
+        barPhase = (beats / 4).frac;
+        resetPulse = T2A.ar(t_reset);
+        // 0: beat; 1: bar; 2: downbeat on reset; 3: transport gate; 4: 64-beat phase.
+        // A reset does not fire paused tracks until the next grid crossing.
+        Out.ar(phaseBus, [beatPhase, barPhase, resetPulse, K2A.ar(gate), beats]);
+    })
+};
+
+// Default free-running grains remain unchanged. Valid synchronized divisions
+// are the number of evenly spaced grains per beat on a common 4/4 grid.
+~erroneusClockDivisions = [0, 1, 2, 4, 8, 16];
+// Cycles per four-beat bar for each modulation slot; zero is unsynced Hz.
+~erroneusModSyncDivisions = [0, 1, 2, 4, 8, 16];
+~erroneusBPM = ~erroneusBPM ? 120;
+~erroneusClockRunning = ~erroneusClockRunning ? 1;
+
+~erroneusSetTempo = { |bpm|
+    if(bpm.isNumber and: { (bpm >= 30) and: { bpm <= 300 } }, {
+        ~erroneusBPM = bpm;
+        if(~erroneusClock.notNil, { ~erroneusClock.set(\bpm, bpm); });
+    }, {
+        "Erroneus BPM must be between 30 and 300.".warn;
+    });
+};
+
+~erroneusSetClockRunning = { |running|
+    if([0, 1].includes(running), {
+        ~erroneusClockRunning = running;
+        if(~erroneusClock.notNil, {
+            ~erroneusClock.set(\running, running);
+        });
+    }, {
+        "Clock running must be 0 (pause) or 1 (resume).".warn;
+    });
+};
+
+~erroneusResetClock = {
+    if(~erroneusClock.notNil, {
+        ~erroneusClock.set(\t_reset, 1);
+    }, {
+        "Start Erroneus before resetting the musical clock.".warn;
+    });
+};
+
+~erroneusSetModSyncDivision = { |track, slot, division|
+    if(
+        ~erroneusSampleValidTrack.value(track) and: {
+            [0, 1, 2, 3].includes(slot)
+        } and: { ~erroneusModSyncDivisions.includes(division) },
+        {
+            ~erroneusTracks[track].set(
+                ("mod" ++ (slot + 1).asString ++ "SyncDivision").asSymbol, division
+            );
+        }, {
+            "Choose track 0-3, mod slot 0-3, and sync division 0, 1, 2, 4, 8 or 16.".warn;
+        }
+    );
+};
+
+~erroneusSetTrackDivision = { |track, division|
+    if(
+        ~erroneusSampleValidTrack.value(track) and: {
+            ~erroneusClockDivisions.includes(division)
+        }, {
+            ~erroneusTracks[track].set(\clockDivision, division);
+            ~erroneusTrackDivisions[track] = division;
+            if(~erroneusGuiRefreshGrainSync.notNil, {
+                { ~erroneusGuiRefreshGrainSync.value; }.defer;
+            });
+        }, {
+            "Choose a running track 0-3 and clock division 0, 1, 2, 4, 8, or 16.".warn;
+        }
+    );
+};
+
+// Loop lengths divide the master 64-beat cycle exactly.
+~erroneusLoopBeats = [1, 2, 4, 8, 16, 32, 64];
+~erroneusSetSamplePlayback = { |track, mode = 0, beats = 4|
+    if(~erroneusSampleValidTrack.value(track) and: {
+        [0, 1, 2].includes(mode) and: { ~erroneusLoopBeats.includes(beats) }
+    }, {
+        ~erroneusTracks[track].set(\samplePlayback, mode, \sampleBeats, beats);
+        ~erroneusPlaybackModes[track] = mode;
+        ~erroneusPlaybackBeats[track] = beats;
+        ~erroneusSampleNotify.value;
+    }, { "Choose track 0-3, mode 0 free / 1 sync / 2 retrigger, and 1-64 power-of-two beats.".warn; });
+};
+~erroneusSetMetronome = { |level = 0|
+    if(~erroneusMetronome.notNil and: { level.isNumber and: { level >= 0 and: { level <= 0.15 } } }, {
+        ~erroneusMetronome.set(\amp, level);
+    }, { "Start engine and choose metronome level 0-0.15.".warn; });
+};
+~erroneusMakeMetronomeDef = {
+    SynthDef(\erroneusMetronome, { |phaseBus = 0, amp = 0, out = 0|
+        var c, tick, accent, click;
+        c = In.ar(phaseBus, 5);
+        tick = ((HPZ1.ar(c[0]) < -0.1) + c[2]).clip(0, 1) * c[3];
+        accent = Latch.ar((c[1] < 0.01), tick);
+        click = SinOsc.ar(1000 + (accent * 700)) * Decay2.ar(tick, 0.001, 0.035);
+        Out.ar(out, Limiter.ar(click * Lag.kr(amp, 0.02), 0.7) ! 2);
+    })
+};
+
 ~erroneusMakeTrackDef = {
     SynthDef(\erroneusTrack, {
-        |out = 0, buf = 0, sampleBuf = 0, sampleMode = 0, voice = 0, sourceMode = 0, inputGain = 0.25,
+        |out = 0, buf = 0, sampleBuf = 0, sampleMode = 0, clockPhaseBus = 0, clockDivision = 0,
+         samplePlayback = 0, sampleBeats = 4,
+         voice = 0, sourceMode = 0, inputGain = 0.25,
          amp = 0.13, grainMix = 0.8, density = 15,
          grainDur = 0.22, pitch = 1, position = 0.35,
          scanHz = 0, spray = 0.025,
          ringMix = 0.35, root = 110, ringTime = 0.15,
          drive = 0.15, space = 0.35, feedback = 0.2,
          freeze = 0, evolve = 0.25,
-         mod1Wave = 0, mod1Target = 0, mod1Rate = 0.12, mod1Depth = 0,
-         mod2Wave = 2, mod2Target = 0, mod2Rate = 0.30, mod2Depth = 0,
-         mod3Wave = 3, mod3Target = 0, mod3Rate = 0.60, mod3Depth = 0,
-         mod4Wave = 4, mod4Target = 0, mod4Rate = 1.00, mod4Depth = 0|
+         mod1Wave = 0, mod1Target = 0, mod1Rate = 0.12, mod1Depth = 0, mod1SyncDivision = 0,
+         mod2Wave = 2, mod2Target = 0, mod2Rate = 0.30, mod2Depth = 0, mod2SyncDivision = 0,
+         mod3Wave = 3, mod3Target = 0, mod3Rate = 0.60, mod3Depth = 0, mod3SyncDivision = 0,
+         mod4Wave = 4, mod4Target = 0, mod4Rate = 1.00, mod4Depth = 0, mod4SyncDivision = 0|
 
         var base, internal, external, material, captureMaterial, sampleDirect;
         var samplePhase, activeBuf, sampleOn, phase, readPos;
+        var loopPhase, loopTrigger, syncedFrame, retriggerFrame, retriggerGate, sampleFrames, playbackGate;
         var recordEnabled, captureWriteHead, captureReadPos, absoluteReadPos;
-        var grainTrigger, granular, sound, ring, colored;
+        var grainTrigger, freeGrainTrigger, beatPhase, barPhase, gridPhase, gridTrigger;
+        var clockSignals, clockReset, clockGate;
+        var granular, sound, ring, colored;
         var feedbackSignal, recordSignal, outputSignal, drift;
         var waveSignal, modFor, m1, m2, m3, m4;
         var effectivePosition, effectiveScan, effectiveSpray, effectiveDensity;
@@ -30,26 +152,51 @@
         var effectiveRingMix, effectiveRoot, effectiveRingTime;
         var effectiveDrive, effectiveSpace, effectiveFeedback;
 
-        // Four per-track modulators run inside scsynth, not over OSC.
-        // Shape indices: 0 sine, 1 triangle, 2 step random,
-        // 3 smooth random, 4 triggered positive decay envelope.
-        waveSignal = { |hz, shape|
-            var rate, envelope;
+        // All four tracks read a single server-owned phase timeline.
+        // Ordered clock node supplies current-block samples on these buses.
+        clockSignals = In.ar(clockPhaseBus, 5);
+        beatPhase = clockSignals[0];
+        barPhase = clockSignals[1];
+        clockReset = A2K.kr(clockSignals[2]);
+        clockGate = A2K.kr(clockSignals[3]);
+
+        // Four modulators per track. Default Hz mode stays unchanged.
+        // Sync divisions are cycles per bar: 1=whole, 4=quarter, 16=sixteenth.
+        // Grid-derived phase locks periodic waves; random/envelope shapes
+        // receive grid-derived triggers. No separate per-track tempo oscillator.
+        waveSignal = { |hz, shape, syncDivision|
+            var rate, freeEnvelope, freeWave, syncPhase, syncTrigger;
+            var stepRandom, syncEnvelope, syncWave;
             rate = hz.clip(0.03, 20);
-            envelope = Decay2.kr(
+            freeEnvelope = Decay2.kr(
                 Impulse.kr(rate), 0.008, (0.40 / rate).clip(0.015, 2.0)
             ).clip(0, 1);
-            Select.kr(shape.clip(0, 4), [
+            freeWave = Select.kr(shape.clip(0, 4), [
                 SinOsc.kr(rate), LFTri.kr(rate),
                 LFNoise0.kr(rate), LFNoise1.kr(rate),
-                envelope
-            ])
+                freeEnvelope
+            ]);
+            syncPhase = A2K.kr((barPhase * syncDivision.clip(1, 16)).frac);
+            syncTrigger = (
+                ((HPZ1.kr(syncPhase) < (-0.1)) + clockReset).clip(0, 1)
+                * clockGate
+            );
+            stepRandom = TRand.kr(-1, 1, syncTrigger);
+            syncEnvelope = Decay2.kr(syncTrigger, 0.008, 0.15).clip(0, 1);
+            syncWave = Select.kr(shape.clip(0, 4), [
+                (syncPhase * 6.283185307179586).sin,
+                1 - ((syncPhase * 4) - 2).abs,
+                stepRandom,
+                Lag.kr(stepRandom, 0.12),
+                syncEnvelope
+            ]);
+            Select.kr(syncDivision > 0, [freeWave, syncWave])
         };
 
-        m1 = waveSignal.value(mod1Rate, mod1Wave) * mod1Depth.clip(0, 1);
-        m2 = waveSignal.value(mod2Rate, mod2Wave) * mod2Depth.clip(0, 1);
-        m3 = waveSignal.value(mod3Rate, mod3Wave) * mod3Depth.clip(0, 1);
-        m4 = waveSignal.value(mod4Rate, mod4Wave) * mod4Depth.clip(0, 1);
+        m1 = waveSignal.value(mod1Rate, mod1Wave, mod1SyncDivision) * mod1Depth.clip(0, 1);
+        m2 = waveSignal.value(mod2Rate, mod2Wave, mod2SyncDivision) * mod2Depth.clip(0, 1);
+        m3 = waveSignal.value(mod3Rate, mod3Wave, mod3SyncDivision) * mod3Depth.clip(0, 1);
+        m4 = waveSignal.value(mod4Rate, mod4Wave, mod4SyncDivision) * mod4Depth.clip(0, 1);
 
         // Each modulator routes to exactly one destination; different
         // modulators may share a destination, and sums are bounded.
@@ -102,10 +249,23 @@
             Phasor.ar(0, recordEnabled, 0, BufFrames.kr(buf))
         ) / BufFrames.kr(buf);
         activeBuf = Select.kr(sampleOn, [buf, sampleBuf]);
-        samplePhase = Phasor.ar(
-            0, BufRateScale.kr(activeBuf), 0, BufFrames.kr(activeBuf)
-        );
-        sampleDirect = BufRd.ar(1, activeBuf, samplePhase, 1, 4) ! 2;
+        sampleFrames = BufFrames.kr(activeBuf).max(2);
+        samplePhase = Phasor.ar(0, BufRateScale.kr(activeBuf), 0, sampleFrames);
+        // Every supported loop length divides the shared 64-beat phase.
+        // Sync resamples to fill the loop; retrigger keeps native pitch/speed.
+        loopPhase = (clockSignals[4] / sampleBeats.clip(1, 64)).frac;
+        loopTrigger = ((HPZ1.ar(loopPhase) < -0.1) + clockSignals[2]).clip(0, 1) * clockSignals[3];
+        syncedFrame = loopPhase * sampleFrames;
+        retriggerFrame = Sweep.ar(loopTrigger, SampleRate.ir * BufRateScale.kr(activeBuf) * clockSignals[3]);
+        retriggerGate = SetResetFF.ar(loopTrigger,
+            (T2A.ar((Changed.kr(samplePlayback) + Changed.kr(sampleBeats) + Changed.kr(activeBuf) + Changed.kr(sampleOn)).clip(0, 1))
+                + (clockSignals[2] * (1 - clockSignals[3]))).clip(0, 1) * (1 - loopTrigger));
+        playbackGate = Select.ar(samplePlayback.clip(0, 2), [
+            DC.ar(1), clockSignals[3], clockSignals[3] * retriggerGate * (retriggerFrame < sampleFrames)
+        ]);
+        sampleDirect = (BufRd.ar(1, activeBuf, Select.ar(samplePlayback.clip(0, 2), [
+            samplePhase, syncedFrame, retriggerFrame.clip(0, sampleFrames - 1)
+        ]), 1, 4) * Lag.ar(playbackGate, 0.003)) ! 2;
         material = (captureMaterial * (1 - sampleOn)) + (sampleDirect * sampleOn);
 
         // Scan and drift offset either reference system. Scan Hz 0 holds
@@ -123,9 +283,21 @@
             [absoluteReadPos, captureReadPos]
         );
 
-        grainTrigger = Dust.kr(
+        // Shared phase from the clock Synth preceding every track in the
+        // same node group. Audio-rate grid triggers align across all tracks.
+        // Division = 0 keeps the original probabilistic free-running grains.
+        gridPhase = (beatPhase * clockDivision.clip(0, 16)).frac;
+        gridTrigger = (
+            ((HPZ1.ar(gridPhase) < (-0.1)) + clockSignals[2]).clip(0, 1)
+            * clockSignals[3]
+        );
+        freeGrainTrigger = Dust.kr(
             effectiveDensity *
             (1 + (LFNoise1.kr(0.4) * evolve)).clip(0.1, 1.9)
+        );
+        grainTrigger = Select.ar(
+            (clockDivision > 0),
+            [K2A.ar(freeGrainTrigger), gridTrigger]
         );
         granular = GrainBuf.ar(
             2, grainTrigger, effectiveDuration, activeBuf,
@@ -299,6 +471,12 @@
         ~erroneusGroup.free;
         ~erroneusGroup = nil;
     });
+    ~erroneusClock = nil;
+    ~erroneusMetronome = nil;
+    if(~erroneusClockPhaseBus.notNil, {
+        ~erroneusClockPhaseBus.free;
+        ~erroneusClockPhaseBus = nil;
+    });
     // Invalidate any outstanding asynchronous file-read completions.
     ~erroneusSampleSession = (~erroneusSampleSession ? 0) + 1;
     if(~erroneusSampleBuffers.notNil, {
@@ -309,6 +487,9 @@
     ~erroneusSampleBuffers = nil;
     ~erroneusSamplePaths = nil;
     ~erroneusSampleModes = nil;
+    ~erroneusPlaybackModes = nil;
+    ~erroneusTrackDivisions = nil;
+    ~erroneusPlaybackBeats = nil;
     ~erroneusSampleGeneration = nil;
     ~erroneusSampleStatus = nil;
     if(~erroneusBuffers.notNil, {
@@ -328,6 +509,8 @@
     s.options.numInputBusChannels = 2;
 
     s.waitForBoot({
+        ~erroneusMakeClockDef.value.add;
+        ~erroneusMakeMetronomeDef.value.add;
         ~erroneusMakeTrackDef.value.add;
         Routine({
             s.sync;
@@ -342,9 +525,17 @@
             });
             s.sync;
 
+            ~erroneusClockPhaseBus = Bus.audio(s, 5);
             ~erroneusGroup = Group.head(s);
+            // Clock must execute before track In.ar readers in every block.
+            ~erroneusClock = Synth.head(~erroneusGroup, \erroneusClock, [
+                \phaseBus, ~erroneusClockPhaseBus.index,
+                \bpm, ~erroneusBPM,
+                \running, ~erroneusClockRunning
+            ]);
             ~erroneusTracks = Array.fill(4, { |i|
                 Synth.tail(~erroneusGroup, \erroneusTrack, [
+                    \clockPhaseBus, ~erroneusClockPhaseBus.index,
                     \buf, ~erroneusBuffers[i].bufnum,
                     \voice, i,
                     \root, [55, 80, 135, 220][i],
@@ -354,15 +545,25 @@
                 ])
             });
 
+            ~erroneusMetronome = Synth.tail(~erroneusGroup, \erroneusMetronome, [
+                \phaseBus, ~erroneusClockPhaseBus.index
+            ]);
             ~erroneusSampleSession = (~erroneusSampleSession ? 0) + 1;
             ~erroneusSampleBuffers = Array.fill(4, { nil });
             ~erroneusSamplePaths = Array.fill(4, { nil });
             ~erroneusSampleModes = Array.fill(4, { 0 });
+            ~erroneusPlaybackModes = Array.fill(4, { 0 });
+            ~erroneusTrackDivisions = Array.fill(4, { 0 });
+            ~erroneusPlaybackBeats = Array.fill(4, { 4 });
             ~erroneusSampleGeneration = Array.fill(4, { 0 });
             ~erroneusSampleStatus = Array.fill(4, { "Capture (no file)" });
             ~erroneusSampleNotify.value;
 
-            "Erroneus v0.3 running: four independent tracks.".postln;
+            "Erroneus v0.5 running: four tracks on one musical clock.".postln;
+            "Tempo: ~erroneusSetTempo.value(120);".postln;
+            "Sync track 1: ~erroneusSetTrackDivision.value(0, 4);".postln;
+            "Sync mod 1: ~erroneusSetModSyncDivision.value(0, 0, 4);".postln;
+            "Bar reset: ~erroneusResetClock.value;".postln;
             "Control: ~erroneusTracks[0].set(\\freeze, 1, \\scanHz, 0);".postln;
             "Stop: ~erroneusStop.value;".postln;
         }).play(SystemClock);
@@ -381,4 +582,13 @@ if(~erroneusCompileOnly != true, { ~erroneusStart.value; });
 // ~erroneusTracks.do({ |t| t.set(\amp, 0.07); });
 // Four independent modulators per track, depth = 0 until enabled.
 // ~erroneusTracks[0].set(\mod1Wave, 0, \mod1Target, 1, \mod1Rate, 0.2, \mod1Depth, 0.5);
+// ~erroneusSetTempo.value(128); // Global internal transport: 30-300 BPM.
+// ~erroneusSetTrackDivision.value(0, 4); // Track 1: four grains per beat.
+// ~erroneusSetTrackDivision.value(1, 2); // Track 2: two grains per beat.
+// ~erroneusSetTrackDivision.value(0, 0); // Track 1: original free-running grains.
+// ~erroneusSetClockRunning.value(0); // Pause the musical grid (not audio).
+// ~erroneusSetClockRunning.value(1); // Resume at the held beat phase.
+// ~erroneusResetClock.value; // Reset all synced tracks to bar 1, beat 1.
+// ~erroneusSetModSyncDivision.value(0, 0, 4); // First mod: one cycle per beat.
+// ~erroneusSetModSyncDivision.value(0, 0, 0); // First mod: return to Hz mode.
 // ~erroneusStop.value;

@@ -1,6 +1,8 @@
 // Opens the real Qt controls in a virtual display, with placeholder tracks.
 // No scsynth boot or sound card is required.
 (
+~erroneusCompileOnly = true;
+thisProcess.interpreter.executeFile("erroneus-v0.scd");
 ~erroneusModGuiCompileOnly = true;
 thisProcess.interpreter.executeFile("erroneus-mod-gui.scd");
 ~erroneusSampleGuiCompileOnly = true;
@@ -12,6 +14,7 @@ if(~erroneusOpenGUI.isNil, {
     1.exit;
 }, {
     ~erroneusTracks = [nil, nil, nil, nil];
+    ~erroneusTrackDivisions = [0, 4, 0, 0];
     AppClock.sched(0.1, {
         var status = 0;
         try({
@@ -27,6 +30,19 @@ if(~erroneusOpenGUI.isNil, {
             });
             if(~erroneusGuiMakeDefaults.value(0)[\scanHz] != 0, {
                 Error("Scan must default to 0 for stationary input-capture lookback").throw;
+            });
+            if(~erroneusGuiGrainSyncMenu.items.size != 6, {
+                Error("Expected free plus five grain sync choices").throw;
+            });
+            ~erroneusGuiSelectedTrack = 1;
+            ~erroneusGuiRefresh.value;
+            if(~erroneusGuiGrainSyncMenu.value != 3 or: { ~erroneusGuiRows[3][1].enabled }, {
+                Error("Synced track must show sixteenths and disable density").throw;
+            });
+            ~erroneusGuiSelectedTrack = 0;
+            ~erroneusGuiRefresh.value;
+            if(~erroneusGuiGrainSyncMenu.value != 0 or: { ~erroneusGuiRows[3][1].enabled.not }, {
+                Error("Free track must restore density slider").throw;
             });
             ~erroneusOpenModGUI.value;
             if(~erroneusModWindow.isNil, {

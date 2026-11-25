@@ -2,7 +2,7 @@
 
 An open-source experimental performance instrument written in SuperCollider. Erroneus is built for granular transformation, rhythmic manipulation, live capture, sample mangling, modulation, and productive musical accidents.
 
-**Status:** v0.3 exploration. The sound engine has played on the target Latitude 7300 at approximately 18% reported server CPU. A sound-design test panel and a headless compilation check are included; sound quality and control fluidity are still under evaluation.
+**Status:** v0.5 clock experiment. The engine baseline was accepted after local audio, capture, sample and modulation checks on the Latitude 7300 (approximately 23% reported peak server CPU). Clock accuracy still needs hardware validation.
 
 ## Design direction
 
@@ -14,7 +14,7 @@ The instrument favors unexpected results that can be discovered, captured, and d
 
 1. Install SuperCollider on Linux and configure a working audio server (PipeWire/JACK/ALSA).
 2. Open `erroneus-v0.scd` in SuperCollider IDE and evaluate the main parenthesized block.
-3. Wait for `Erroneus v0.1 running` in the post window.
+3. Wait for `Erroneus v0.5 running` in the post window.
 4. Evaluate any of the control examples at the end of the file.
 5. For live slider testing, open `erroneus-gui.scd` in the SuperCollider IDE and evaluate the parenthesized block after the four tracks are running. The GUI opens automatically.
 6. For audio files, evaluate `erroneus-sample-gui.scd` to open the four-track sample manager.
@@ -27,6 +27,7 @@ No audio files required: each track has its own simple built-in source. You can 
 ## Features in the first prototype
 
 - Four independently controllable stereo-output tracks with eight-second mono circular capture buffers.
+- A shared server-side 4/4 musical clock (30–300 BPM) with opt-in, synchronized grain triggering per track.
 - Per-track sample loading with independent file buffers; preserve and return to live capture without restarting.
 - Granular playback with position, scan speed, random drift, density, duration, and pitch.
 - An eight-mode per-track resonator bank, smooth distortion, and stereo reverb.
@@ -148,6 +149,52 @@ Near Position 0, grains can collide with the active recording location and produ
 ### Performance input direction
 
 Keyboard and mouse are baseline devices for the next gesture surface. An older Wacom Bamboo/Intuos tablet should initially act through mouse-compatible X/Y movement, with pressure and pen buttons explored later through an optional Linux input-to-OSC adapter if supported by the model. Physical MPD32 mapping remains optional. Avoid hard-wiring device events into SynthDefs: gesture sources should converge on a shared set of performance commands and parameters. See ARCHITECTURE.md.
+## Shared musical clock (v0.5 experiment)
+
+Erroneus has **one audio-server transport** for all four tracks. The clock publishes shared beat phase, fixed 4/4 bar phase, a reset pulse and a running gate on four private audio-bus channels. All four tracks use that same clock. Grain onsets and each of four modulation slots may be synchronized independently; the default remains free-running.
+
+The default is **120 BPM in 4/4**. With the engine running, evaluate these commands in the SuperCollider IDE:
+
+~~~supercollider
+~erroneusSetTempo.value(128);                  // Global tempo, 30–300 BPM
+~erroneusSetTrackDivision.value(0, 4);         // Track 1 grains on sixteenth notes
+~erroneusSetTrackDivision.value(1, 2);         // Track 2 grains on eighth notes
+~erroneusSetModSyncDivision.value(0, 0, 4);    // Track 1 mod 1: one cycle per beat
+~erroneusSetModSyncDivision.value(0, 1, 1);    // Track 1 mod 2: one cycle per bar
+~erroneusSetModSyncDivision.value(0, 0, 0);    // Mod 1 back to free-running Hz
+~erroneusSetTrackDivision.value(0, 0);         // Track 1 grains free-run again
+~erroneusSetClockRunning.value(0);             // Pause quantized events, not audio
+~erroneusSetClockRunning.value(1);             // Resume at held phase
+~erroneusResetClock.value;                     // Reset all synced tracks to downbeat
+~~~
+
+**Grain divisions:** 0 (free) or 1, 2, 4, 8, 16 *grains per beat*. **Modulator divisions:** 0 (free-running Hz) or 1, 2, 4, 8, 16 *cycles per four-beat bar*. Track and modulation slot indices both start at zero. Set a modulation destination and nonzero depth in the existing modulation GUI before trying a synchronized modulator; the sync command changes timing, not routing.
+
+Tempo changes preserve the current beat/bar phase. Reset produces a new downbeat while playing; resetting while paused positions the clock at the bar start without sounding an event. Pause holds musical phase and stops quantized grain triggers and new synced random/envelope events. Direct playback, capture and free-running modulations continue; existing envelope and smoothing tails can decay. Engine restart resets the musical phase. Subdivision changes mid-beat are not quantized and may cause an immediate additional event.
+
+Direct loaded sample playback can now lock to the shared clock; granular position, capture, scan, pitch-preserving stretching, external MIDI and stereo stem support remain separate work.
+
+### Clock listening checklist
+
+Load percussive material on two tracks, use mostly wet grains, and set divisions 2 and 4. Check shared beat boundaries while changing tempo 80 → 128 → 170 BPM. Pause/resume/reset, then return one track to free-running grains. Route an audible modulator and compare 1 versus 4 cycles/bar. Finally check capture/sample switching and CPU. The headless math-reference test is **not** proof of sample-accurate real-time behavior.
+
+### Grain sync in the main panel
+
+Choose Grain sync for the selected track: Free (Dust), quarter, eighth, sixteenth, 1/32 or 1/64. The density slider is disabled while clocked and its prior setting is retained when returning to Free. Reset track restores Free. Grain sync controls onset timing only; sample playback sync is a separate control in the sample panel.
+
+### Deterministic sample playback
+
+The sample panel includes Free, Sync (resample), and Retrigger modes with loop lengths of 1, 2, 4, 8, 16, 32 or 64 beats. Free retains the original independent loop. Sync fits the entire loaded sample into the chosen duration, changing pitch with speed. Retrigger waits for the next matching grid boundary and plays the file at its original rate, truncating at the next boundary or leaving silence if it ends early. Sync and Retrigger pause with the transport. Clock reset realigns every loop. The click is off by default; use Click on and Reset clock in the sample panel.
+
+For timing tests, load a trimmed drum loop, set Grain Mix, resonance mix, reverb, feedback and modulation depths to zero, select Sync and the correct number of beats, turn on the click, then reset the clock. Use a second loop with the same or another supported beat length. Change BPM and listen for alignment. Switch to Retrigger to compare native-rate playback. Direct sample playback is independent of the grain position, pitch, density and Dust trigger controls. Sync is resampling, not pitch-preserving stretching. Mode/length changes can jump the playhead and click; the current implementation is not a quantized launch system. Loop lengths are deliberately restricted to powers of two.
+
+```supercollider
+~erroneusSetSamplePlayback.value(0, 1, 4); // track 1, Sync, four beats
+~erroneusSetSamplePlayback.value(1, 2, 8); // track 2, Retrigger, eight beats
+~erroneusSetMetronome.value(0.07);
+~erroneusResetClock.value;
+```
+
 ## Validation
 
 The repository includes `tests/compile.scd` and a GitHub Actions workflow.
@@ -158,7 +205,7 @@ From the repository root with `sclang` installed:
 QT_QPA_PLATFORM=offscreen sclang -D tests/compile.scd
 ```
 
-It compiles the actual `\erroneusTrack` SynthDef, including its UGen graph, parses all three GUI sources, and opens/closes all three windows under a virtual display. It checks `ERRONEUS_COMPILE_OK`, `ERRONEUS_GUI_COMPILE_OK`, `ERRONEUS_MOD_COMPILE_OK` and `ERRONEUS_MOD_GUI_SMOKE_OK`, `ERRONEUS_SAMPLE_COMPILE_OK`, and `ERRONEUS_SAMPLE_GUI_SMOKE_OK`. This does not prove audible modulation, disk-loading behavior, or real-time CPU performance; those need a real audio server.
+It compiles the actual `\erroneusTrack` and `\erroneusClock` SynthDefs, including its UGen graph, parses all three GUI sources, and opens/closes all three windows under a virtual display. It checks `ERRONEUS_CLOCK_COMPILE_OK`, `ERRONEUS_CLOCK_REFERENCE_OK`, `ERRONEUS_COMPILE_OK`, `ERRONEUS_GUI_COMPILE_OK`, `ERRONEUS_MOD_COMPILE_OK` and `ERRONEUS_MOD_GUI_SMOKE_OK`, `ERRONEUS_SAMPLE_COMPILE_OK`, and `ERRONEUS_SAMPLE_GUI_SMOKE_OK`. This does not prove audible modulation, disk-loading behavior, or real-time CPU performance; those need a real audio server.
 
 ## Hardware baseline
 
