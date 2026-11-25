@@ -45,6 +45,13 @@
     });
 };
 
+~erroneusGuiRefreshTransport = {
+    if(~erroneusGuiTempoBox.notNil, {
+        ~erroneusGuiTempoBox.value_(~erroneusBPM);
+        ~erroneusGuiTransportButton.value_(1 - ~erroneusClockRunning);
+    });
+};
+
 ~erroneusGuiRefreshGrainSync = {
     var division, synced;
     if(~erroneusGuiGrainSyncMenu.notNil and: { ~erroneusTrackDivisions.notNil }, {
@@ -76,6 +83,7 @@
 ~erroneusOpenGUI = {
     var window, trackSelector, freezeButton, sourceButton, resetButton;
     var silenceButton, title, footer, rows, rowFactory, syncMenu, syncStatus;
+    var tempoBox, transportButton;
 
     if(~erroneusTracks.isNil or: { ~erroneusTracks.size != 4 }, {
         "Start erroneus-v0.scd and wait for all four tracks before opening the GUI.".warn;
@@ -91,19 +99,32 @@
             ~erroneusGuiSelectedTrack = 0;
             rows = List.new;
 
-            window = Window("Erroneus | Control Fluidity Lab", Rect(160, 65, 790, 720));
+            window = Window("Erroneus | Control Fluidity Lab", Rect(160, 45, 790, 750));
             ~erroneusGuiWindow = window;
 
             title = StaticText(window, Rect(18, 12, 740, 22));
             title.string_("ERRONEUS  |  sound-shaping controls");
             title.font_(Font.default.boldVariant);
 
-            StaticText(window, Rect(18, 47, 56, 24)).string_("Track");
-            trackSelector = PopUpMenu(window, Rect(77, 47, 130, 24));
+            StaticText(window, Rect(18, 42, 125, 24)).string_("Master BPM");
+            tempoBox = NumberBox(window, Rect(153, 42, 100, 24));
+            tempoBox.clipLo_(30).clipHi_(300).step_(0.1).decimals_(1);
+            tempoBox.action_({ |box| ~erroneusSetTempo.value(box.value); });
+            transportButton = Button(window, Rect(265, 42, 130, 24));
+            transportButton.states_([["Pause clock"], ["Resume clock"]]);
+            transportButton.action_({ |button| ~erroneusSetClockRunning.value(1 - button.value); });
+            Button(window, Rect(405, 42, 130, 24))
+                .states_([["Reset clock"]])
+                .action_({ ~erroneusResetClock.value; });
+            ~erroneusGuiTempoBox = tempoBox;
+            ~erroneusGuiTransportButton = transportButton;
+
+            StaticText(window, Rect(18, 77, 56, 24)).string_("Track");
+            trackSelector = PopUpMenu(window, Rect(77, 77, 130, 24));
             trackSelector.items_(["Track 1", "Track 2", "Track 3", "Track 4"]);
             trackSelector.value_(0);
 
-            freezeButton = Button(window, Rect(218, 47, 150, 24));
+            freezeButton = Button(window, Rect(218, 77, 150, 24));
             freezeButton.states_([
                 ["Capture: ON"],
                 ["Capture: FROZEN"]
@@ -112,7 +133,7 @@
                 ~erroneusGuiSet.value(\freeze, button.value);
             });
 
-            sourceButton = Button(window, Rect(378, 47, 152, 24));
+            sourceButton = Button(window, Rect(378, 77, 152, 24));
             sourceButton.states_([
                 ["Source: Synth"],
                 ["Source: Input"]
@@ -121,7 +142,7 @@
                 ~erroneusGuiSet.value(\sourceMode, button.value);
             });
 
-            resetButton = Button(window, Rect(540, 47, 112, 24));
+            resetButton = Button(window, Rect(540, 77, 112, 24));
             resetButton.states_([["Reset track"]]);
             resetButton.action_({
                 var i;
@@ -134,7 +155,7 @@
                 ~erroneusGuiRefresh.value;
             });
 
-            silenceButton = Button(window, Rect(663, 47, 110, 24));
+            silenceButton = Button(window, Rect(663, 77, 110, 24));
             silenceButton.states_([["SILENCE ALL"]]);
             silenceButton.action_({
                 4.do({ |i|
@@ -145,14 +166,14 @@
                 ~erroneusGuiRefresh.value;
             });
 
-            StaticText(window, Rect(18, 78, 125, 24)).string_("Grain sync");
-            syncMenu = PopUpMenu(window, Rect(153, 78, 190, 24));
+            StaticText(window, Rect(18, 108, 125, 24)).string_("Grain sync");
+            syncMenu = PopUpMenu(window, Rect(153, 108, 190, 24));
             syncMenu.items_(["Free (Dust)", "1/4 - quarter", "1/8 - eighth", "1/16 - sixteenth", "1/32", "1/64"]);
             syncMenu.action_({ |menu|
                 ~erroneusSetTrackDivision.value(~erroneusGuiSelectedTrack, ~erroneusClockDivisions[menu.value]);
                 ~erroneusGuiRefreshGrainSync.value;
             });
-            syncStatus = StaticText(window, Rect(355, 78, 410, 24));
+            syncStatus = StaticText(window, Rect(355, 108, 410, 24));
             ~erroneusGuiGrainSyncMenu = syncMenu;
             ~erroneusGuiGrainSyncStatus = syncStatus;
 
@@ -160,7 +181,7 @@
                 var key, spec, y, label, slider, readout;
                 key = entry[0];
                 spec = ControlSpec.new(entry[2], entry[3], entry[4]);
-                y = 120 + (index * 30);
+                y = 150 + (index * 30);
                 label = StaticText(window, Rect(18, y, 132, 24));
                 label.string_(entry[1]);
                 slider = Slider(window, Rect(153, y + 2, 508, 20));
@@ -177,7 +198,7 @@
                 rowFactory.value(entry, index);
             });
 
-            footer = StaticText(window, Rect(18, 631, 755, 61));
+            footer = StaticText(window, Rect(18, 661, 755, 61));
             footer.string_(
                 "Input capture Position = delay behind write head; sample/synth = buffer location.\n"
                 ++ "Scan Hz 0 holds that position; Freeze holds the capture reference.\n"
@@ -195,12 +216,15 @@
             window.onClose_({
                 ~erroneusGuiWindow = nil;
                 ~erroneusGuiRows = nil;
+                ~erroneusGuiTempoBox = nil;
+                ~erroneusGuiTransportButton = nil;
                 ~erroneusGuiGrainSyncMenu = nil;
                 ~erroneusGuiGrainSyncStatus = nil;
                 ~erroneusGuiFreezeButton = nil;
                 ~erroneusGuiSourceButton = nil;
             });
             ~erroneusGuiRefresh.value;
+            ~erroneusGuiRefreshTransport.value;
             window.front;
         });
     });
