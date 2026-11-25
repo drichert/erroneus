@@ -70,6 +70,9 @@ if(~erroneusOpenGUI.isNil, {
             if(~erroneusSampleLabels.size != 4, {
                 Error("Expected four sample-control rows").throw;
             });
+            if(~erroneusSamplePlaybackMenus[0].items.size != 4, {
+                Error("Expected Free, Sync, Retrigger and Stem playback choices").throw;
+            });
             "ERRONEUS_SAMPLE_GUI_SMOKE_OK".postln;
             ~erroneusSampleWindow.close;
             "ERRONEUS_MOD_GUI_SMOKE_OK".postln;

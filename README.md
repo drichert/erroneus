@@ -2,11 +2,11 @@
 
 An open-source experimental performance instrument written in SuperCollider. Erroneus is built for granular transformation, rhythmic manipulation, live capture, sample mangling, modulation, and productive musical accidents.
 
-**Status:** v0.5 clock experiment. The engine baseline was accepted after local audio, capture, sample and modulation checks on the Latitude 7300 (approximately 23% reported peak server CPU). Clock accuracy still needs hardware validation.
+**Status:** v0.6 stereo sample/stem experiment (pending CI and hardware listening). The earlier engine baseline was accepted after local audio, capture, sample and modulation checks on the Latitude 7300 (approximately 23% reported peak server CPU); reported peak rose toward 30% during subsequent clock experiments. The clock and new stereo transport still require hardware validation.
 
 ## Design direction
 
-Erroneus explores **gesturally induced chaos**: musical structures that arise through the interaction of audio, modulation, feedback, and performance gestures. Planned areas include independent stereo stems, beat synchronization, time stretching, glitch-heavy rhythmic processing, and radical A/B configuration interpolation. These are design goals, not features of the current prototype.
+Erroneus explores **gesturally induced chaos**: musical structures that arise through the interaction of audio, modulation, feedback, and performance gestures. Stereo sample channels, native-rate stem launching and beat synchronization are now experimental features. Pitch-preserving time stretching, glitch-heavy cutting engines and radical A/B configuration interpolation remain design goals.
 
 The instrument favors unexpected results that can be discovered, captured, and developed. It is not intended as a clone of any particular hardware sampler.
 
@@ -14,7 +14,7 @@ The instrument favors unexpected results that can be discovered, captured, and d
 
 1. Install SuperCollider on Linux and configure a working audio server (PipeWire/JACK/ALSA).
 2. Open `erroneus-v0.scd` in SuperCollider IDE and evaluate the main parenthesized block.
-3. Wait for `Erroneus v0.5 running` in the post window.
+3. Wait for `Erroneus v0.6 running` in the post window.
 4. Evaluate any of the control examples at the end of the file.
 5. For live slider testing, open `erroneus-gui.scd` in the SuperCollider IDE and evaluate the parenthesized block after the four tracks are running. The GUI opens automatically.
 6. For audio files, evaluate `erroneus-sample-gui.scd` to open the four-track sample manager.
@@ -27,8 +27,8 @@ No audio files required: each track has its own simple built-in source. You can 
 ## Features in the first prototype
 
 - Four independently controllable stereo-output tracks with eight-second mono circular capture buffers.
-- A shared server-side 4/4 musical clock (30–300 BPM) with opt-in, synchronized grain triggering per track.
-- Per-track sample loading with independent file buffers; preserve and return to live capture without restarting.
+- A shared server-side 4/4 musical clock (30–300 BPM) with opt-in synchronized grain triggering and common native-rate stem launch/reset.
+- Per-track full-file mono/stereo sample loading with a configurable session memory budget, paired stereo file buffers and preserved mono live capture.
 - Granular playback with position, scan speed, random drift, density, duration, and pitch.
 - An eight-mode per-track resonator bank, smooth distortion, and stereo reverb.
 - Filtered and bounded recirculation of processed audio into the recording buffer.
@@ -112,27 +112,37 @@ Set `\mod1Depth` or `\mod1Target` to zero to silence/disconnect that slot. The *
 
 Modulation of other modulators, freeze, input selection, and clock sync are outside this first milestone.
 
-## Sample loading and live capture (v0.3 experiment)
+## Sample loading, stereo channels and native-rate stems (v0.6 experiment)
 
 Open `erroneus-sample-gui.scd` after starting the engine. Each track has **Load file**, **Use sample**, **Use capture**, and **Unload** controls.
 
-- WAV/AIFF files can be mono or stereo. This first pass reads the **first channel only** into an independent mono buffer; it does not downmix stereo.
-- Files are capped at **60 seconds** of audio (longer files are truncated). Loading is asynchronous, so the synth does not restart while a file is read.
-- When a file finishes loading, that track automatically switches to Sample mode. In Sample mode, both **direct looping playback** and granular playback read the loaded buffer. The existing grain mix, modulation, resonance, distortion, and reverb all continue to work.
-- The original eight-second **capture buffer stays intact** while the sample plays. Recording into the capture buffer is paused automatically in Sample mode. Select **Use capture** to resume using the stored recording and resume writing if capture freeze is off.
-- **Unload** returns to Capture, then frees the sample buffer only after its replacement is installed. If a second load is initiated before the first finishes, the earlier request cannot replace the latest request.
-- Sample files are kept in memory for the session. There is no streaming, persistent sample bank, automatic normalization, or crossfade for switching files yet. Abrupt source switches may click; use low output levels while exploring.
+- WAV/AIFF files load **in full, without truncation**. Mono files use one buffer for both output channels (dual mono). Stereo files load separate left/right mono buffers so both direct playback and granulation retain the source's stereo information. Files with more than two channels use the first two.
+- Erroneus uses a configurable **768 MiB default sample-memory budget**, counting all active, loading and retiring buffers. Set `~erroneusSampleMemoryBudgetMiB = 1024;` before starting (or change it while running) to raise the limit. A file that would exceed the budget is rejected, not partially loaded. A 48 kHz, 5-minute stereo file consumes about 110 MiB; four consume about 440 MiB before replacement headroom. Audio buffer contents are 32-bit floats regardless of original file bit depth.
+- `BufRd` uses floating-point frame positions and is limited to **16,777,216 frames per file** in this implementation (about 5 minutes 50 seconds at 48 kHz). Larger files are explicitly rejected, not silently clipped. Disk streaming / segmented long-file playback is future work.
+- Loading is asynchronous. Stereo channel buffers are installed together after both complete. A superseded load cannot replace the latest file; retired buffers are released only after server synchronization.
+- Selecting Sample lets direct playback and grain processing use the file; selecting Capture restores the preserved eight-second **mono** ring buffer. Writing into capture is paused while a sample plays and resumes on return when freeze is off. Feedback still downmixes to mono for capture.
+- Source replacement and mode changes are not crossfaded or quantized yet, so clicks remain possible. No persistence, sample normalization or disk streaming yet.
 
-You can control it without the sample GUI:
+**Stem mode** plays the entire file at its original pitch and speed, with the same server-side downbeat across all tracks. It loops at the original file length rather than at the clock's 64-beat cycle. Pause holds its playhead, resume continues, and Reset clock returns all stems to frame zero. Importantly, different-length stem files will eventually drift apart after their respective loop boundaries; use aligned, equal-length exports for full-track remixes.
+
+Use **Launch loaded stems** in the sample panel or evaluate:
 
 ```supercollider
-~erroneusLoadSample.value(0, "/absolute/path/to/loop.wav"); // track 1, async
-~erroneusUseCapture.value(0); // keep file loaded; return to live capture
-~erroneusUseSample.value(0);  // switch back to that file
-~erroneusUnloadSample.value(0); // return to capture and free sample
+~erroneusLoadSample.value(0, "/absolute/path/to/drums.wav");
+~erroneusLoadSample.value(1, "/absolute/path/to/bass.wav");
+~erroneusLoadSample.value(2, "/absolute/path/to/vocals.wav");
+~erroneusLoadSample.value(3, "/absolute/path/to/music.wav");
+// After all four show Sample loaded:
+~erroneusLaunchStems.value; // Select Stem for loaded tracks + shared reset
+~erroneusSetClockRunning.value(0); // Hold all stem playheads
+~erroneusSetClockRunning.value(1); // Resume in sync
+~erroneusResetClock.value;         // Rewind to shared downbeat
+~erroneusUseCapture.value(0);      // Switch only track 1 to mono capture
+~erroneusUseSample.value(0);       // Switch back to its retained file
+~erroneusUnloadSample.value(0);    // Free that track's file buffers
 ```
 
-**Direct sample playback** follows the soundfile's original sample rate, looping continuously. Grain pitch is corrected for the file's sample rate. The `freeze` control remains unchanged when switching sources.
+**Memory note:** while replacing a sample, old and new buffers overlap temporarily, so a replacement near the memory limit may be rejected. Unload or raise the budget if sufficient physical RAM is available. This is an in-RAM instrument, not a disk-streaming stem player.
 
 ### Position reference by source (v0.4 experiment)
 
@@ -172,7 +182,7 @@ The default is **120 BPM in 4/4**. With the engine running, evaluate these comma
 
 Tempo changes preserve the current beat/bar phase. Reset produces a new downbeat while playing; resetting while paused positions the clock at the bar start without sounding an event. Pause holds musical phase and stops quantized grain triggers and new synced random/envelope events. Direct playback, capture and free-running modulations continue; existing envelope and smoothing tails can decay. Engine restart resets the musical phase. Subdivision changes mid-beat are not quantized and may cause an immediate additional event.
 
-Direct loaded sample playback can now lock to the shared clock; granular position, capture, scan, pitch-preserving stretching, external MIDI and stereo stem support remain separate work.
+Direct loaded sample playback can lock to the shared clock; full-length native-rate stereo stems can also launch together. Granular position, capture, scan, pitch-preserving stretching and external MIDI sync remain separate work.
 
 ### Clock listening checklist
 
@@ -188,7 +198,7 @@ Choose Grain sync for the selected track: Free (Dust), quarter, eighth, sixteent
 
 ### Deterministic sample playback
 
-The sample panel includes Free, Sync (resample), and Retrigger modes with loop lengths of 1, 2, 4, 8, 16, 32 or 64 beats. Free retains the original independent loop. Sync fits the entire loaded sample into the chosen duration, changing pitch with speed. Retrigger waits for the next matching grid boundary and plays the file at its original rate, truncating at the next boundary or leaving silence if it ends early. Sync and Retrigger pause with the transport. Clock reset realigns every loop. The click is off by default; use Click on and Reset clock in the sample panel.
+The sample panel includes Free, Sync (resample), Retrigger and Stem (native) modes. Sync/Retrigger support loop lengths of 1, 2, 4, 8, 16, 32 or 64 beats. Free retains the original independent loop. Sync fits the entire loaded sample into the chosen duration, changing pitch with speed. Retrigger waits for the next matching grid boundary and plays the file at its original rate, truncating at the next boundary or leaving silence if it ends early. Stem loops the complete file at native rate, including beyond 64 beats. Sync, Retrigger and Stem follow transport pause. Clock reset also rewinds stems. The click is off by default; use Click on and Reset clock in the sample panel.
 
 For timing tests, load a trimmed drum loop, set Grain Mix, resonance mix, reverb, feedback and modulation depths to zero, select Sync and the correct number of beats, turn on the click, then reset the clock. Use a second loop with the same or another supported beat length. Change BPM and listen for alignment. Switch to Retrigger to compare native-rate playback. Direct sample playback is independent of the grain position, pitch, density and Dust trigger controls. Sync is resampling, not pitch-preserving stretching. Mode/length changes can jump the playhead and click; the current implementation is not a quantized launch system. Loop lengths are deliberately restricted to powers of two.
 
@@ -217,7 +227,7 @@ Initial target: Dell Latitude 7300, 32 GB RAM, Linux, 48 kHz, 256-sample audio b
 
 ## What is not implemented yet
 
-Scene recall, modulation-to-modulation routing, cross-track sends, per-stage audio buses, persistent projects, and a production performance GUI. Buffers are mono despite stereo track outputs. The resonator bank has eight modes, not an S-4-equivalent spectral bank.
+Scene recall, modulation-to-modulation routing, cross-track sends, per-stage audio buses, persistent projects, and a production performance GUI. Live capture buffers remain mono even when audio inputs are stereo. Stereo file playback/granulation is experimental and unverified on hardware. The resonator bank has eight modes, not an S-4-equivalent spectral bank.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for design principles and next steps.
 

@@ -2,9 +2,9 @@
 // Start erroneus-v0.scd first, then evaluate this file in SuperCollider IDE.
 // Requires no quarks. SoundFile/Buffer decoding supports WAV and AIFF.
 //
-// Four tracks retain independent live capture histories. Selecting Sample
-// reads the loaded mono file buffer; selecting Capture returns to the original
-// live ring buffer. The file buffers are freed only after the Synth switches.
+// Four tracks retain independent mono capture histories. Selecting Sample
+// reads the complete mono/stereo file; Capture returns to the original ring
+// buffer. The file buffers are freed only after the Synth switches.
 
 (
 ~erroneusSampleRefresh = {
@@ -84,7 +84,7 @@
                 statusLabel = StaticText(window, Rect(540, y, 400, 30));
                 labels[index] = statusLabel;
                 playbackMenu = PopUpMenu(window, Rect(92, y + 34, 145, 25));
-                playbackMenu.items_(["Free", "Sync (resample)", "Retrigger"]);
+                playbackMenu.items_(["Free", "Sync (resample)", "Retrigger", "Stem (native)"]);
                 beatMenu = PopUpMenu(window, Rect(247, y + 34, 120, 25));
                 beatMenu.items_(~erroneusLoopBeats.collect({ |n| n.asString ++ " beats" }));
                 ~erroneusSamplePlaybackMenus[index] = playbackMenu;
@@ -105,12 +105,15 @@
             Button(window, Rect(150, 369, 120, 28))
                 .states_([["Reset clock"]])
                 .action_({ ~erroneusResetClock.value; });
+            Button(window, Rect(282, 369, 180, 28))
+                .states_([["Launch loaded stems"]])
+                .action_({ ~erroneusLaunchStems.value; });
             note = StaticText(window, Rect(18, 405, 918, 64));
             note.string_(
-                "Load WAV/AIFF (mono, or first channel of a stereo file). Max 60 sec.\n"
-                ++ "Sample uses the loaded file; Capture returns to the preserved 8-second live buffer.\n"
-                ++ "You can keep loaded files in memory while switching sources. "
-                ++ "The sound-shaping and modulation controls still work."
+                "Load complete WAV/AIFF files (mono/stereo); no silent truncation.\n"
+                ++ "Stem: native pitch, full-file loop, shared downbeat/reset and transport pause.\n"
+                ++ "Launch loaded stems aligns every loaded track. Capture stays mono (8 sec). "
+                ++ "Sample memory budget: " ++ ~erroneusSampleMemoryBudgetMiB.asString ++ " MiB."
             );
 
             window.onClose_({
