@@ -178,6 +178,10 @@ Direct loaded sample playback can now lock to the shared clock; granular positio
 
 Load percussive material on two tracks, use mostly wet grains, and set divisions 2 and 4. Check shared beat boundaries while changing tempo 80 → 128 → 170 BPM. Pause/resume/reset, then return one track to free-running grains. Route an audible modulator and compare 1 versus 4 cycles/bar. Finally check capture/sample switching and CPU. The headless math-reference test is **not** proof of sample-accurate real-time behavior.
 
+### Master transport in the main panel
+
+Master BPM is global (30–300 BPM); type a value and press Enter or adjust the number box. Pause/Resume clock holds or resumes the shared phase, and Reset clock returns synchronized paths to the downbeat. Free-running audio is not muted by clock pause. Track selection and Reset track do not change the global tempo.
+
 ### Grain sync in the main panel
 
 Choose Grain sync for the selected track: Free (Dust), quarter, eighth, sixteenth, 1/32 or 1/64. The density slider is disabled while clocked and its prior setting is retained when returning to Free. Reset track restores Free. Grain sync controls onset timing only; sample playback sync is a separate control in the sample panel.

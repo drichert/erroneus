@@ -35,10 +35,17 @@
 ~erroneusBPM = ~erroneusBPM ? 120;
 ~erroneusClockRunning = ~erroneusClockRunning ? 1;
 
+~erroneusNotifyTransport = {
+    if(~erroneusGuiRefreshTransport.notNil, {
+        { ~erroneusGuiRefreshTransport.value; }.defer;
+    });
+};
+
 ~erroneusSetTempo = { |bpm|
     if(bpm.isNumber and: { (bpm >= 30) and: { bpm <= 300 } }, {
         ~erroneusBPM = bpm;
         if(~erroneusClock.notNil, { ~erroneusClock.set(\bpm, bpm); });
+        ~erroneusNotifyTransport.value;
     }, {
         "Erroneus BPM must be between 30 and 300.".warn;
     });
@@ -50,6 +57,7 @@
         if(~erroneusClock.notNil, {
             ~erroneusClock.set(\running, running);
         });
+        ~erroneusNotifyTransport.value;
     }, {
         "Clock running must be 0 (pause) or 1 (resume).".warn;
     });
