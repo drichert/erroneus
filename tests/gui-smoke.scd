@@ -44,6 +44,15 @@ if(~erroneusOpenGUI.isNil, {
             if(~erroneusGuiGrainSyncMenu.value != 0 or: { ~erroneusGuiRows[3][1].enabled.not }, {
                 Error("Free track must restore density slider").throw;
             });
+            ~erroneusGuiTempoBox.valueAction_(137.5);
+            if(~erroneusBPM != 137.5, { Error("Tempo GUI did not update master BPM").throw; });
+            ~erroneusSetTempo.value(96);
+            ~erroneusGuiRefreshTransport.value;
+            if(~erroneusGuiTempoBox.value != 96, { Error("Tempo GUI did not reflect engine BPM").throw; });
+            ~erroneusGuiTransportButton.valueAction_(1);
+            if(~erroneusClockRunning != 0, { Error("Pause GUI did not stop clock").throw; });
+            ~erroneusGuiTransportButton.valueAction_(0);
+            if(~erroneusClockRunning != 1, { Error("Resume GUI did not start clock").throw; });
             ~erroneusOpenModGUI.value;
             if(~erroneusModWindow.isNil, {
                 Error("Modulation GUI did not create a window").throw;
