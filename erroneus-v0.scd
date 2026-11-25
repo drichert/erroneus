@@ -1,4 +1,4 @@
-// Erroneus v0.5: experimental four-track granular feedback instrument.
+// Erroneus v0.6: experimental four-track granular feedback and stereo-stem instrument.
 // Stock SuperCollider only. Start with low output volume.
 //
 // Evaluate the entire parenthesized block in SuperCollider, or execute this file.
@@ -106,13 +106,13 @@
 ~erroneusLoopBeats = [1, 2, 4, 8, 16, 32, 64];
 ~erroneusSetSamplePlayback = { |track, mode = 0, beats = 4|
     if(~erroneusSampleValidTrack.value(track) and: {
-        [0, 1, 2].includes(mode) and: { ~erroneusLoopBeats.includes(beats) }
+        [0, 1, 2, 3].includes(mode) and: { ~erroneusLoopBeats.includes(beats) }
     }, {
         ~erroneusTracks[track].set(\samplePlayback, mode, \sampleBeats, beats);
         ~erroneusPlaybackModes[track] = mode;
         ~erroneusPlaybackBeats[track] = beats;
         ~erroneusSampleNotify.value;
-    }, { "Choose track 0-3, mode 0 free / 1 sync / 2 retrigger, and 1-64 power-of-two beats.".warn; });
+    }, { "Choose track 0-3, mode 0 free / 1 sync / 2 retrigger / 3 stem, and 1-64 power-of-two beats.".warn; });
 };
 ~erroneusSetMetronome = { |level = 0|
     if(~erroneusMetronome.notNil and: { level.isNumber and: { level >= 0 and: { level <= 0.15 } } }, {
@@ -132,7 +132,7 @@
 
 ~erroneusMakeTrackDef = {
     SynthDef(\erroneusTrack, {
-        |out = 0, buf = 0, sampleBuf = 0, sampleMode = 0, clockPhaseBus = 0, clockDivision = 0,
+        |out = 0, buf = 0, sampleBuf = 0, sampleRightBuf = 0, sampleMode = 0, clockPhaseBus = 0, clockDivision = 0,
          samplePlayback = 0, sampleBeats = 4,
          voice = 0, sourceMode = 0, inputGain = 0.25,
          amp = 0.13, grainMix = 0.8, density = 15,
@@ -147,7 +147,8 @@
          mod4Wave = 4, mod4Target = 0, mod4Rate = 1.00, mod4Depth = 0, mod4SyncDivision = 0|
 
         var base, internal, external, material, captureMaterial, sampleDirect;
-        var samplePhase, activeBuf, sampleOn, phase, readPos;
+        var captureGrains, sampleGrains, stemFrame, readFrame;
+        var samplePhase, activeBuf, activeRightBuf, sampleOn, phase, readPos;
         var loopPhase, loopTrigger, syncedFrame, retriggerFrame, retriggerGate, sampleFrames, playbackGate;
         var recordEnabled, captureWriteHead, captureReadPos, absoluteReadPos;
         var grainTrigger, freeGrainTrigger, beatPhase, barPhase, gridPhase, gridTrigger;
@@ -247,8 +248,9 @@
         external = SoundIn.ar([0, 1]) * Lag.kr(inputGain.clip(0, 2), 0.04);
         captureMaterial = (internal * (1 - sourceMode.clip(0, 1)))
                         + (external * sourceMode.clip(0, 1));
-        // Capture history is always in buf. Loaded samples occupy a separate
-        // mono buffer: switching sources never destroys a recording.
+        // Capture remains mono. Sample L/R are separate mono file buffers so
+        // GrainBuf can read both channels with identical onset and position.
+        // For a mono sample the right reader aliases the left buffer.
         sampleOn = sampleMode.clip(0, 1);
         // Use the SAME run gate for recording and the mirrored capture head.
         // Both hold their position during freeze or sample mode.
@@ -257,8 +259,18 @@
             Phasor.ar(0, recordEnabled, 0, BufFrames.kr(buf))
         ) / BufFrames.kr(buf);
         activeBuf = Select.kr(sampleOn, [buf, sampleBuf]);
+        activeRightBuf = Select.kr(sampleOn, [buf, sampleRightBuf]);
         sampleFrames = BufFrames.kr(activeBuf).max(2);
         samplePhase = Phasor.ar(0, BufRateScale.kr(activeBuf), 0, sampleFrames);
+        // Full-file stem mode runs at native speed, independent of the clock's
+        // 64-beat grid cycle. A shared reset starts all armed stems at frame 0;
+        // transport pause holds their positions, with no truncated loop.
+        stemFrame = Phasor.ar(
+            (clockSignals[2] + T2A.ar(
+                (Changed.kr(activeBuf) + Changed.kr(samplePlayback)).clip(0, 1)
+            )).clip(0, 1),
+            BufRateScale.kr(activeBuf) * clockSignals[3], 0, sampleFrames
+        );
         // Every supported loop length divides the shared 64-beat phase.
         // Sync resamples to fill the loop; retrigger keeps native pitch/speed.
         loopPhase = (clockSignals[4] / sampleBeats.clip(1, 64)).frac;
@@ -268,12 +280,21 @@
         retriggerGate = SetResetFF.ar(loopTrigger,
             (T2A.ar((Changed.kr(samplePlayback) + Changed.kr(sampleBeats) + Changed.kr(activeBuf) + Changed.kr(sampleOn)).clip(0, 1))
                 + (clockSignals[2] * (1 - clockSignals[3]))).clip(0, 1) * (1 - loopTrigger));
-        playbackGate = Select.ar(samplePlayback.clip(0, 2), [
-            DC.ar(1), clockSignals[3], clockSignals[3] * retriggerGate * (retriggerFrame < sampleFrames)
+        playbackGate = Select.ar(samplePlayback.clip(0, 3), [
+            DC.ar(1), clockSignals[3],
+            clockSignals[3] * retriggerGate * (retriggerFrame < sampleFrames),
+            DC.ar(1)
         ]);
-        sampleDirect = (BufRd.ar(1, activeBuf, Select.ar(samplePlayback.clip(0, 2), [
-            samplePhase, syncedFrame, retriggerFrame.clip(0, sampleFrames - 1)
-        ]), 1, 4) * Lag.ar(playbackGate, 0.003)) ! 2;
+        readFrame = Select.ar(samplePlayback.clip(0, 3), [
+            samplePhase, syncedFrame, retriggerFrame.clip(0, sampleFrames - 1),
+            stemFrame
+        ]);
+        // Stereo direct playback is not a doubled first channel.
+        // Both buffers share one frame cursor and the original rate correction.
+        sampleDirect = [
+            BufRd.ar(1, activeBuf, readFrame, 1, 4),
+            BufRd.ar(1, activeRightBuf, readFrame, 1, 4)
+        ] * Lag.ar(playbackGate, 0.003);
         material = (captureMaterial * (1 - sampleOn)) + (sampleDirect * sampleOn);
 
         // Scan and drift offset either reference system. Scan Hz 0 holds
@@ -307,11 +328,24 @@
             (clockDivision > 0),
             [K2A.ar(freeGrainTrigger), gridTrigger]
         );
-        granular = GrainBuf.ar(
-            2, grainTrigger, effectiveDuration, activeBuf,
-            effectivePitch * BufRateScale.kr(activeBuf),
+        // GrainBuf reads mono sources. Preserve the original scattered stereo
+        // capture grains; sample L and R use two synchronized mono readers.
+        // Muting inactive triggers avoids voices in the unused granulator.
+        captureGrains = GrainBuf.ar(
+            2, grainTrigger * (1 - sampleOn), effectiveDuration, buf,
+            effectivePitch * BufRateScale.kr(buf),
             readPos, 2, LFNoise1.kr(1.5), -1, 32
-        ) * 0.65;
+        );
+        sampleGrains = [
+            GrainBuf.ar(1, grainTrigger * sampleOn, effectiveDuration, activeBuf,
+                effectivePitch * BufRateScale.kr(activeBuf),
+                readPos, 2, 0, -1, 32),
+            GrainBuf.ar(1, grainTrigger * sampleOn, effectiveDuration, activeRightBuf,
+                effectivePitch * BufRateScale.kr(activeRightBuf),
+                readPos, 2, 0, -1, 32)
+        ];
+        granular = ((captureGrains * (1 - sampleOn))
+            + (sampleGrains * sampleOn)) * 0.65;
         sound = XFade2.ar(
             material, granular, effectiveGrainMix.linlin(0, 1, -1, 1)
         );
@@ -363,15 +397,33 @@
     }
 };
 
-// OSC ordering matters: never free a sample buffer until its replacement
-// has been installed in the playing Synth. This also works from GUI callbacks.
-~erroneusSampleFreeLater = { |buffer|
-    if(buffer.notNil, {
+// OSC ordering matters: release buffers only after their last Synth reader
+// has received the replacement ID. Account for in-flight and retiring buffers
+// in the configurable in-memory sample budget, not just active files.
+~erroneusSampleMemoryBudgetMiB = ~erroneusSampleMemoryBudgetMiB ? 768;
+~erroneusSampleMaxFrames = 16777216; // BufRd's 24-bit frame-addressing limit
+~erroneusSampleReservedBytes = ~erroneusSampleReservedBytes ? 0;
+
+~erroneusSampleFreeLater = { |left, right, bytes = 0, session|
+    if(left.notNil, {
         Routine({
-            buffer.server.sync;
-            buffer.free;
+            left.server.sync;
+            left.free;
+            if(right.notNil, { right.free; });
+            if(session == ~erroneusSampleSession, {
+                ~erroneusSampleReservedBytes =
+                    (~erroneusSampleReservedBytes - bytes).max(0);
+            });
         }).play(SystemClock);
     });
+};
+
+~erroneusSampleLoadCurrent = { |track, generation, session|
+    (~erroneusSampleSession == session) and: {
+        ~erroneusSampleGeneration.notNil and: {
+            ~erroneusSampleGeneration[track] == generation
+        }
+    } and: { ~erroneusSampleValidTrack.value(track) }
 };
 
 ~erroneusUseCapture = { |track|
@@ -386,7 +438,12 @@
     if(~erroneusSampleValidTrack.value(track), {
         if(~erroneusSampleBuffers[track].notNil, {
             ~erroneusTracks[track].set(
-                \sampleBuf, ~erroneusSampleBuffers[track].bufnum, \sampleMode, 1
+                \sampleBuf, ~erroneusSampleBuffers[track].bufnum,
+                \sampleRightBuf, (
+                    ~erroneusSampleRightBuffers[track]
+                    ? ~erroneusSampleBuffers[track]
+                ).bufnum,
+                \sampleMode, 1
             );
             ~erroneusSampleModes[track] = 1;
             ~erroneusSampleNotify.value;
@@ -397,28 +454,66 @@
 };
 
 ~erroneusUnloadSample = { |track|
-    var old;
+    var old, oldRight, oldBytes;
     if(~erroneusSampleValidTrack.value(track), {
         ~erroneusSampleGeneration[track] = ~erroneusSampleGeneration[track] + 1;
         old = ~erroneusSampleBuffers[track];
+        oldRight = ~erroneusSampleRightBuffers[track];
+        oldBytes = ~erroneusSampleBytes[track];
         ~erroneusSampleBuffers[track] = nil;
+        ~erroneusSampleRightBuffers[track] = nil;
+        ~erroneusSampleBytes[track] = 0;
         ~erroneusSamplePaths[track] = nil;
         ~erroneusSampleModes[track] = 0;
         ~erroneusSampleStatus[track] = "Capture (no file)";
-        // Restore the valid capture buffer ID before freeing the sample.
+        // Restore valid buffer IDs before any asynchronous release.
         ~erroneusTracks[track].set(
-            \sampleMode, 0, \sampleBuf, ~erroneusBuffers[track].bufnum
+            \sampleMode, 0,
+            \sampleBuf, ~erroneusBuffers[track].bufnum,
+            \sampleRightBuf, ~erroneusBuffers[track].bufnum
         );
         ~erroneusSampleNotify.value;
-        ~erroneusSampleFreeLater.value(old);
+        ~erroneusSampleFreeLater.value(
+            old, oldRight, oldBytes, ~erroneusSampleSession
+        );
     });
 };
 
-// Load only the first channel for the current mono granular engine.
-// Files longer than one minute are truncated to keep memory bounded.
-~erroneusSampleMaxSeconds = 60;
+// Both channels must finish reading before a new stereo source becomes
+// visible to the Synth. A stale request releases both newly read buffers.
+~erroneusSampleCommit = {
+    |track, path, generation, session, left, right, bytes|
+    var old, oldRight, oldBytes;
+    if(~erroneusSampleLoadCurrent.value(track, generation, session), {
+        old = ~erroneusSampleBuffers[track];
+        oldRight = ~erroneusSampleRightBuffers[track];
+        oldBytes = ~erroneusSampleBytes[track];
+        ~erroneusSampleBuffers[track] = left;
+        ~erroneusSampleRightBuffers[track] = right;
+        ~erroneusSampleBytes[track] = bytes;
+        ~erroneusSamplePaths[track] = path;
+        ~erroneusSampleModes[track] = 1;
+        ~erroneusSampleStatus[track] = "Sample: "
+            ++ PathName.new(path).fileName
+            ++ " (" ++ left.duration.round(0.1).asString
+            ++ " sec, " ++ if(right.notNil, { "stereo" }, { "mono" }) ++ ")";
+        ~erroneusTracks[track].set(
+            \sampleBuf, left.bufnum,
+            \sampleRightBuf, (right ? left).bufnum,
+            \sampleMode, 1
+        );
+        ~erroneusSampleNotify.value;
+        ~erroneusSampleFreeLater.value(old, oldRight, oldBytes, session);
+    }, {
+        ~erroneusSampleFreeLater.value(left, right, bytes, session);
+    });
+};
+
+// Load the *whole* file or reject it explicitly. Never silently truncate.
+// Reserve memory before requesting asynchronous reads, including overlap
+// with other pending/retiring buffers. Mono uses one buffer, stereo uses two.
 ~erroneusLoadSample = { |track, path|
-    var soundFile, frames, maxFrames, generation, session, filePath;
+    var soundFile, frames, channels, bytes, maxBytes, generation, session, filePath;
     if(~erroneusSampleValidTrack.value(track).not, {
         "Start Erroneus before loading samples; track must be 0-3.".warn;
     }, {
@@ -427,49 +522,96 @@
         if(soundFile.openRead(filePath).not, {
             ("Cannot open audio file: " ++ filePath).warn;
         }, {
-            maxFrames = (~erroneusSampleMaxSeconds * soundFile.sampleRate).asInteger;
-            frames = soundFile.numFrames.min(maxFrames);
+            frames = soundFile.numFrames;
+            channels = soundFile.numChannels.min(2);
             soundFile.close;
-            if(frames < 2, {
+            bytes = frames * channels * 4;
+            maxBytes = (~erroneusSampleMemoryBudgetMiB * 1024 * 1024).floor;
+            if((frames < 2) or: { channels < 1 }, {
                 ("Sample is empty or invalid: " ++ filePath).warn;
             }, {
-                generation = ~erroneusSampleGeneration[track] + 1;
-                ~erroneusSampleGeneration[track] = generation;
-                session = ~erroneusSampleSession;
-                ~erroneusSampleStatus[track] = "Loading: "
-                    ++ PathName.new(filePath).fileName;
-                ~erroneusSampleNotify.value;
-                Buffer.readChannel(
-                    s, filePath, numFrames: frames, channels: [0],
-                    action: { |newBuffer|
-                        var old;
-                        if(
-                            (~erroneusSampleSession == session) and: {
-                                ~erroneusSampleGeneration.notNil and: {
-                                    ~erroneusSampleGeneration[track] == generation
-                                }
-                            } and: { ~erroneusSampleValidTrack.value(track) },
-                            {
-                                old = ~erroneusSampleBuffers[track];
-                                ~erroneusSampleBuffers[track] = newBuffer;
-                                ~erroneusSamplePaths[track] = filePath;
-                                ~erroneusSampleModes[track] = 1;
-                                ~erroneusSampleStatus[track] = "Sample: "
-                                    ++ PathName.new(filePath).fileName
-                                    ++ " (" ++ (newBuffer.duration.round(0.1)).asString
-                                    ++ " sec)";
-                                ~erroneusTracks[track].set(
-                                    \sampleBuf, newBuffer.bufnum, \sampleMode, 1
-                                );
-                                ~erroneusSampleNotify.value;
-                                ~erroneusSampleFreeLater.value(old);
-                            },
-                            { newBuffer.free; }
+                if(frames > ~erroneusSampleMaxFrames, {
+                    ("Sample exceeds BufRd's "
+                        ++ ~erroneusSampleMaxFrames.asString
+                        ++ "-frame addressing limit; file was not truncated: "
+                        ++ filePath).warn;
+                }, {
+                    if((~erroneusSampleReservedBytes + bytes) > maxBytes, {
+                        ("Sample exceeds the " ++ ~erroneusSampleMemoryBudgetMiB
+                            ++ " MiB session budget (including pending loads): "
+                            ++ filePath).warn;
+                    }, {
+                        ~erroneusSampleReservedBytes =
+                            ~erroneusSampleReservedBytes + bytes;
+                        generation = ~erroneusSampleGeneration[track] + 1;
+                        ~erroneusSampleGeneration[track] = generation;
+                        session = ~erroneusSampleSession;
+                        ~erroneusSampleStatus[track] = "Loading: "
+                            ++ PathName.new(filePath).fileName;
+                        ~erroneusSampleNotify.value;
+                        Buffer.readChannel(
+                            s, filePath, numFrames: frames, channels: [0],
+                            action: { |left|
+                                if(channels == 2, {
+                                    if(~erroneusSampleLoadCurrent.value(
+                                        track, generation, session
+                                    ), {
+                                        Buffer.readChannel(
+                                            s, filePath, numFrames: frames,
+                                            channels: [1],
+                                            action: { |right|
+                                                ~erroneusSampleCommit.value(
+                                                    track, filePath, generation,
+                                                    session, left, right, bytes
+                                                );
+                                            }
+                                        );
+                                    }, {
+                                        ~erroneusSampleFreeLater.value(
+                                            left, nil, bytes, session
+                                        );
+                                    });
+                                }, {
+                                    ~erroneusSampleCommit.value(
+                                        track, filePath, generation,
+                                        session, left, nil, bytes
+                                    );
+                                });
+                            }
                         );
-                    }
-                );
+                    });
+                });
             });
         });
+    });
+};
+
+// One bundled command switches every loaded sample to native-rate stem mode
+// and resets the server clock. All four running stem cursors see that downbeat
+// in the same DSP block. Unloaded tracks are left unchanged.
+~erroneusLaunchStems = {
+    var count = 0;
+    if(~erroneusTracks.notNil and: { ~erroneusClock.notNil }, {
+        s.makeBundle(nil, {
+            4.do({ |i|
+                var left, right;
+                left = ~erroneusSampleBuffers[i];
+                right = ~erroneusSampleRightBuffers[i];
+                if(left.notNil, {
+                    ~erroneusTracks[i].set(
+                        \sampleBuf, left.bufnum,
+                        \sampleRightBuf, (right ? left).bufnum,
+                        \sampleMode, 1, \samplePlayback, 3
+                    );
+                    ~erroneusSampleModes[i] = 1;
+                    ~erroneusPlaybackModes[i] = 3;
+                    count = count + 1;
+                });
+            });
+            if(count > 0, { ~erroneusClock.set(\t_reset, 1); });
+        });
+        ~erroneusSampleNotify.value;
+        if(count == 0, { "Load stems before launching.".warn; });
     });
 };
 
@@ -492,7 +634,15 @@
             if(buffer.notNil, { buffer.free; });
         });
     });
+    if(~erroneusSampleRightBuffers.notNil, {
+        ~erroneusSampleRightBuffers.do({ |buffer|
+            if(buffer.notNil, { buffer.free; });
+        });
+    });
+    ~erroneusSampleReservedBytes = 0;
     ~erroneusSampleBuffers = nil;
+    ~erroneusSampleRightBuffers = nil;
+    ~erroneusSampleBytes = nil;
     ~erroneusSamplePaths = nil;
     ~erroneusSampleModes = nil;
     ~erroneusPlaybackModes = nil;
@@ -545,6 +695,8 @@
                 Synth.tail(~erroneusGroup, \erroneusTrack, [
                     \clockPhaseBus, ~erroneusClockPhaseBus.index,
                     \buf, ~erroneusBuffers[i].bufnum,
+                    \sampleBuf, ~erroneusBuffers[i].bufnum,
+                    \sampleRightBuf, ~erroneusBuffers[i].bufnum,
                     \voice, i,
                     \root, [55, 80, 135, 220][i],
                     \density, [12, 16, 10, 19][i],
@@ -558,6 +710,9 @@
             ]);
             ~erroneusSampleSession = (~erroneusSampleSession ? 0) + 1;
             ~erroneusSampleBuffers = Array.fill(4, { nil });
+            ~erroneusSampleRightBuffers = Array.fill(4, { nil });
+            ~erroneusSampleBytes = Array.fill(4, { 0 });
+            ~erroneusSampleReservedBytes = 0;
             ~erroneusSamplePaths = Array.fill(4, { nil });
             ~erroneusSampleModes = Array.fill(4, { 0 });
             ~erroneusPlaybackModes = Array.fill(4, { 0 });
@@ -567,11 +722,12 @@
             ~erroneusSampleStatus = Array.fill(4, { "Capture (no file)" });
             ~erroneusSampleNotify.value;
 
-            "Erroneus v0.5 running: four tracks on one musical clock.".postln;
+            "Erroneus v0.6 running: four tracks on one musical clock.".postln;
             "Tempo: ~erroneusSetTempo.value(120);".postln;
             "Sync track 1: ~erroneusSetTrackDivision.value(0, 4);".postln;
             "Sync mod 1: ~erroneusSetModSyncDivision.value(0, 0, 4);".postln;
             "Bar reset: ~erroneusResetClock.value;".postln;
+            "Launch loaded stems together: ~erroneusLaunchStems.value;".postln;
             "Control: ~erroneusTracks[0].set(\\freeze, 1, \\scanHz, 0);".postln;
             "Stop: ~erroneusStop.value;".postln;
         }).play(SystemClock);
