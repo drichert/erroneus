@@ -34,7 +34,7 @@ Each of the four tracks is a separate instance of the same SynthDef, with its ow
 ## Emerging design principles
 
 - Keep tempo synchronization optional: stable pulse, independently modulated timelines, and fully free-running behavior must coexist.
-- Support stereo samples and, eventually, four synchronized stereo stems without making stem remixing the only workflow.
+- Support mono or stereo samples and synchronized native-rate stereo stems without making stem remixing the only workflow.
 - Treat A/B configuration interpolation as a primary performance gesture, not an afterthought.
 - Preserve audio safety and the ability to capture happy accidents while allowing unpredictable musical results.
 
@@ -77,9 +77,10 @@ The preferred incremental route is a native desktop shell/controller (C++ with Q
 
 - [ ] Verify headless SynthDef compilation in GitHub Actions
 - [ ] Listen and profile on a Latitude 7300; measure CPU and audio dropouts
-- [x] Add non-destructive mono sample loading with a separate buffer per track
+- [x] Add non-destructive mono/stereo sample loading with independent track buffers (v0.6; hardware validation pending)
 - [ ] Exercise audio-recording and live-input paths end-to-end on the Latitude
-- [ ] Add stereo capture and stereo granular reading
+- [x] Add split-channel stereo file granulation (pending listening/CPU validation)
+- [ ] Expand the independent live capture history to stereo (deferred, not part of the current stereo-file work)
 - [ ] Add click-free sample switching, stereo-to-mono downmix and sample normalization
 - [x] Add a first-pass GUI panel for listening to parameter sweeps (not a production GUI)
 - [x] Introduce four per-track modulators with source/target/rate/depth routing
@@ -108,30 +109,52 @@ Final destination limits are enforced after summing modulation, especially feedb
 
 Limitations: envelope modes are free-running periodic decays, not audio-following or externally gated; no clock synchronization, modulation-to-modulation routing, phase reset, or persistent scenes.
 
-## Loaded samples versus capture history (v0.3)
+## Loaded samples versus capture history (v0.3, extended in v0.6)
 
-Each track owns **two kinds of buffer**: an eight-second mono circular
-capture buffer (`buf`), plus an optional separate loaded-file
-buffer (`sampleBuf`). The server-side `sampleMode`
-selects which buffer feeds granular playback and the direct source.
-Loaded file playback uses `BufRd` at the file's sample rate;
-grain pitch is scaled by `BufRateScale` for files recorded at
-non-server sample rates.
+Each track has an eight-second mono circular capture buffer (`buf`) and
+optionally a loaded sample. Mono samples use one mono file buffer for L/R
+playback. Stereo samples use a pair of **independent mono** file buffers
+(`sampleBuf` for left and `sampleRightBuf` for right), because stock
+`GrainBuf` reads mono material. Both channel granulators receive the same
+trigger, read position, pitch and envelope for coherent stereo processing.
+`BufRd` separately reads the two file channels at a shared frame position
+and original rate; direct and granular signals mix before the existing stereo
+effects. Capture retains the original stereo-granule panning behavior from
+its mono history, and the record/feedback path continues to downmix to mono.
 
-The capture buffer is never overwritten by loading a file. While sample mode
-is active, the capture `RecordBuf` is paused regardless of
-the user's `freeze` value, preserving its history. Returning to
-Capture restores that history and the original freeze behavior.
+The capture buffer is never overwritten by loading a file. In sample mode,
+its `RecordBuf` stops writing regardless of freeze, preserving its history.
+Returning to Capture restores that history and the previous freeze semantics.
+No request here expands or allocates stereo capture.
 
-`SoundFile` validates file metadata; `Buffer.readChannel` asynchronously loads
-the first audio channel into memory (currently max 60 seconds). File loading
-uses generation tokens to ignore stale completion callbacks, plus a session
-token invalidated on engine restart. Old buffers are freed only after a server
-sync confirms that the playback Synth has been pointed elsewhere.
+`SoundFile` checks metadata; paired `Buffer.readChannel` operations load
+the complete file into memory, with a configurable session budget (default
+768 MiB) and a hard `BufRd` frame-addressing guard at 2^24 frames.
+The budget reserves **new, resident, and retiring** sample allocations
+so replacement does not silently exceed the intended cap. File loads
+are asynchronous, with generation and engine-session tokens to reject
+stale callbacks. Both stereo channel buffers are installed in a single
+Synth parameter message only after both have loaded. Retired buffers
+are freed after a server sync. A read failure before its completion
+callback may need improved error recovery in a future iteration.
 
-Limitations: mono first-channel import, no streaming or crossfaded file
-transitions, no persistent sample paths across reboot, no automatic peak
-normalization. Source switching can be abrupt; audio validation is essential.
+`samplePlayback = 3` adds native-rate stem mode. Its full-file Phasor is
+driven by the shared transport running gate and the server clock reset
+pulse; it does **not** wrap at the 64-beat rhythmic grid. The bundled
+`~erroneusLaunchStems` control sets every loaded track to sample/stem
+mode and triggers one shared clock reset to start their read cursors in
+the same processing block. This is a common launch/reset for loaded
+stems, not beat quantization of arbitrary future track switching.
+
+**Limitations:** in-RAM audio only (no disk streaming), no crossfaded
+source changes, no normalization, no persistent file references, no
+pitch-preserving time stretching. The 2^24-frame guard prevents unsafe
+long-file reads but rejects files longer than about 5m50s at 48 kHz.
+For synchronized looping the source files should be aligned and the
+same length: their independent full-length loops repeat on each
+file's own boundary. Hardware listening, GUI responsiveness,
+stereo separation, rapid reload/unload and four-stem CPU remain to be
+verified on the Latitude 7300. See issue #17 for controlled profiling.
 
 ## Position reference and input gestures (v0.4 exploration)
 
@@ -164,7 +187,7 @@ Each of four per-track modulators independently defaults to *free-running Hz* mo
 
 Public sclang functions: ~erroneusSetTempo, ~erroneusSetClockRunning, ~erroneusResetClock, ~erroneusSetTrackDivision and ~erroneusSetModSyncDivision. This is intentionally device independent. MPD32, keyboard, GUI, OSC and external synchronization must eventually call these common transport APIs, not introduce independent clocks.
 
-The internal clock remains the only timing authority. An eventual MIDI clock follower (24 PPQN) should estimate/filter external tempo and phase, translate start/continue/stop/song-position messages into transport commands, and discipline the single server clock rather than giving each track its own scheduler. Latency, jitter, dropout/relock and phase-reset policy need hardware measurements before promising external sync accuracy. Future work also includes configurable meter, bar-quantized scenes/capture, clocked sample transport/time stretching, phase offsets and swing.
+The internal clock remains the only timing authority. An eventual MIDI clock follower (24 PPQN) should estimate/filter external tempo and phase, translate start/continue/stop/song-position messages into transport commands, and discipline the single server clock rather than giving each track its own scheduler. Latency, jitter, dropout/relock and phase-reset policy need hardware measurements before promising external sync accuracy. Future work also includes configurable meter, bar-quantized scenes/capture, pitch-preserving time stretching, phase offsets and swing. Native-rate stem playback now uses the clock reset/run signals without inheriting the 64-beat loop length.
 
 ### Deterministic direct playback
 
