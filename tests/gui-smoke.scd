@@ -63,6 +63,21 @@ if(~erroneusOpenGUI.isNil, {
             if(~erroneusModRows[0][1].items.size != 14, {
                 Error("Expected Off and thirteen modulation destinations").throw;
             });
+            // A new engine session must discard stale values without sending
+            // old panel settings to the newly created Synths.
+            ~erroneusGuiValues[0][\grainMix] = 0.05;
+            ~erroneusGuiValues[1][\pitch] = -3;
+            ~erroneusModStates[0][0][\depth] = 0.9;
+            ~erroneusModStates[0][0][\target] = 1;
+            ~erroneusResetPanelState.value;
+            if(~erroneusGuiValues[0][\grainMix] != 0.8 or: {
+                ~erroneusGuiValues[1][\pitch] != 0.5
+            }, { Error("New session retained stale sound controls").throw; });
+            if(~erroneusModStates[0][0][\depth] != 0 or: {
+                ~erroneusModStates[0][0][\target] != 0
+            }, { Error("New session retained stale modulation controls").throw; });
+            ~erroneusGuiRefresh.value;
+            ~erroneusModRefresh.value;
             ~erroneusOpenSampleGUI.value;
             if(~erroneusSampleWindow.isNil, {
                 Error("Sample manager GUI failed to open").throw;

@@ -473,6 +473,26 @@
     });
 };
 
+// GUI caches describe the current Synth session, not the previous one.
+// Called only after the new tracks and their control state are initialized.
+~erroneusResetPanelState = {
+    ~erroneusGuiValues = if(~erroneusGuiMakeDefaults.notNil, {
+        Array.fill(4, { |i| ~erroneusGuiMakeDefaults.value(i) })
+    }, { nil });
+    ~erroneusModStates = if(~erroneusModDefaultStates.notNil, {
+        ~erroneusModDefaultStates.value
+    }, { nil });
+    {
+        if(~erroneusGuiWindow.notNil and: { ~erroneusGuiValues.notNil }, {
+            ~erroneusGuiRefresh.value;
+            ~erroneusGuiRefreshTransport.value;
+        });
+        if(~erroneusModWindow.notNil and: { ~erroneusModStates.notNil }, {
+            ~erroneusModRefresh.value;
+        });
+    }.defer;
+};
+
 ~erroneusStop = {
     // Release synth readers before freeing either the sample or capture buffers.
     if(~erroneusGroup.notNil, {
@@ -565,6 +585,7 @@
             ~erroneusPlaybackBeats = Array.fill(4, { 4 });
             ~erroneusSampleGeneration = Array.fill(4, { 0 });
             ~erroneusSampleStatus = Array.fill(4, { "Capture (no file)" });
+            ~erroneusResetPanelState.value;
             ~erroneusSampleNotify.value;
 
             "Erroneus v0.5 running: four tracks on one musical clock.".postln;
