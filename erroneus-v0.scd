@@ -496,7 +496,7 @@
         ~erroneusSampleStatus[track] = "Sample: "
             ++ PathName.new(path).fileName
             ++ " (" ++ left.duration.round(0.1).asString
-            ++ " sec, " ++ if(right.notNil, { "stereo" }, { "mono" }) ++ ")";
+            ++ " sec, " ++ (if(right.notNil, { "stereo" }, { "mono" })) ++ ")";
         ~erroneusTracks[track].set(
             \sampleBuf, left.bufnum,
             \sampleRightBuf, (right ? left).bufnum,
