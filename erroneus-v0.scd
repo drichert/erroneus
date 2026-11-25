@@ -283,7 +283,7 @@
         playbackGate = Select.ar(samplePlayback.clip(0, 3), [
             DC.ar(1), clockSignals[3],
             clockSignals[3] * retriggerGate * (retriggerFrame < sampleFrames),
-            DC.ar(1)
+            clockSignals[3] // Hold playhead and mute output during pause
         ]);
         readFrame = Select.ar(samplePlayback.clip(0, 3), [
             samplePhase, syncedFrame, retriggerFrame.clip(0, sampleFrames - 1),
